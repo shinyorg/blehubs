@@ -1,0 +1,11 @@
+{
+  "solution": {
+    "path": "SmartBle.slnx",
+    "projects": [
+      "src/Shiny.SmartBle/Shiny.SmartBle.csproj",
+      "src/Shiny.SmartBle.SourceGenerators/Shiny.SmartBle.SourceGenerators.csproj",
+      "src/Shiny.SmartBle.Host/Shiny.SmartBle.Host.csproj",
+      "src/Shiny.SmartBle.Client/Shiny.SmartBle.Client.csproj"
+    ]
+  }
+}

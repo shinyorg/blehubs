@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <IsAotCompatible>true</IsAotCompatible>
+        <RootNamespace>Shiny.SmartBle</RootNamespace>
+        <Description>Shiny.SmartBle host - SignalR style hubs served over a BLE GATT server, plus L2CAP file transfers</Description>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.SmartBle\Shiny.SmartBle.csproj" />
+        <PackageReference Include="Shiny.BluetoothLE.Hosting" />
+        <InternalsVisibleTo Include="Shiny.SmartBle.Tests" />
+    </ItemGroup>
+</Project>

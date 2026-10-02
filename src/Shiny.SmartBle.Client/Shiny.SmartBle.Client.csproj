@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <IsAotCompatible>true</IsAotCompatible>
+        <RootNamespace>Shiny.SmartBle</RootNamespace>
+        <Description>Shiny.SmartBle client - discovers BLE hub hosts and calls them through generated, strongly typed proxies</Description>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.SmartBle\Shiny.SmartBle.csproj" />
+        <PackageReference Include="Shiny.BluetoothLE" />
+        <InternalsVisibleTo Include="Shiny.SmartBle.Tests" />
+    </ItemGroup>
+</Project>
