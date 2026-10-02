@@ -1,5 +1,5 @@
 using System.Text.Json.Serialization;
-using Shiny.SmartBle;
+using Shiny.BluetoothLE.Hubs;
 using TicTacToe.Game;
 
 namespace TicTacToe.Hub;

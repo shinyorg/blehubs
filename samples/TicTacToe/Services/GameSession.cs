@@ -1,5 +1,5 @@
 using Microsoft.Extensions.Logging;
-using Shiny.SmartBle;
+using Shiny.BluetoothLE.Hubs;
 using TicTacToe.Game;
 using TicTacToe.Hub;
 

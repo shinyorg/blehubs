@@ -70,18 +70,18 @@ jobs:
         with:
           token: ${{ secrets.SKILLS_REPO_TOKEN }}
           path: skills-repo
-          commit-message: "Update skills from shinyorg/smartble"
-          title: "Update skills from Shiny.SmartBle"
+          commit-message: "Update skills from shinyorg/bluetoothle-hubs"
+          title: "Update skills from Shiny.BluetoothLE.Hubs"
           body: |
-            This PR updates the `shiny` plugin skills from the [Shiny.SmartBle repository](https://github.com/shinyorg/smartble).
+            This PR updates the `shiny` plugin skills from the [Shiny.BluetoothLE.Hubs repository](https://github.com/shinyorg/bluetoothle-hubs).
 
             **Source branch:** `${{ github.ref_name }}`
             **Source commit:** ${{ github.sha }}
             **Triggered by:** @${{ github.actor }}
 
             ---
-            *This PR was automatically created by the [sync-skills workflow](https://github.com/shinyorg/smartble/actions/workflows/sync-skills.yml).*
-          branch: update-skills-smartble
+            *This PR was automatically created by the [sync-skills workflow](https://github.com/shinyorg/bluetoothle-hubs/actions/workflows/sync-skills.yml).*
+          branch: update-skills-ble-hubs
           delete-branch: true
           labels: |
             automated

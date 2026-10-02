@@ -1,6 +1,6 @@
-# Shiny.SmartBle
+# Shiny.BluetoothLE.Hubs
 
-Shiny.SmartBle gives you SignalR-style hubs over Bluetooth LE. One device hosts a hub, and nearby devices discover it, connect, and call it through a source-generated, strongly typed proxy. The host pushes events back to everyone, to some clients, or to groups. Files move over L2CAP, a faster direct channel between the devices.
+Shiny.BluetoothLE.Hubs gives you SignalR-style hubs over Bluetooth LE. One device hosts a hub, and nearby devices discover it, connect, and call it through a source-generated, strongly typed proxy. The host pushes events back to everyone, to some clients, or to groups. Files move over L2CAP, a faster direct channel between the devices.
 
 It's built on Shiny.BluetoothLE and Shiny.BluetoothLE.Hosting, and it is AOT- and trim-safe with no reflection.
 
@@ -37,9 +37,9 @@ await client.UploadFile(path, "avatar.jpg");                      // L2CAP
 
 | Project | Purpose |
 |---|---|
-| `Shiny.SmartBle` | Wire protocol (framing, chunking, reassembly), argument codec, serializer, `[BleHubClient]`. Ships the source generator |
-| `Shiny.SmartBle.Host` | `BleHub<T>`, `IBleHubHost`, `IHubContext<THub>`, groups, L2CAP file server |
-| `Shiny.SmartBle.Client` | `BleHubClient` (base of the generated proxies), discovery, shared connections, file upload and download |
+| `Shiny.BluetoothLE.Hubs` | Wire protocol (framing, chunking, reassembly), argument codec, serializer, `[BleHubClient]`. Ships the source generator |
+| `Shiny.BluetoothLE.Hubs.Host` | `BleHub<T>`, `IBleHubHost`, `IHubContext<THub>`, groups, L2CAP file server |
+| `Shiny.BluetoothLE.Hubs.Client` | `BleHubClient` (base of the generated proxies), discovery, shared connections, file upload and download |
 
 ## Setup
 
@@ -48,7 +48,7 @@ Json.AddContext(MyJsonContext.Default);     // hub arguments/results are AOT-saf
 
 // host
 services.AddBluetoothLeHosting();
-services.AddBleSmartHub<GameHub>(ServiceUuid, CharacteristicUuid, o => o.MaxClients = 6);
+services.AddBleHub<GameHub>(ServiceUuid, CharacteristicUuid, o => o.MaxClients = 6);
 services.ConfigureBleHubHost(o => o.EnableFileTransfers(Path.Combine(FileSystem.AppDataDirectory, "files")));
 await serviceProvider.GetRequiredService<IBleHubHost>().Start();
 
@@ -89,7 +89,7 @@ dotnet build samples/TicTacToe -f net10.0-ios -t:Run
 ## Tests
 
 ```bash
-dotnet test tests/Shiny.SmartBle.Tests
+dotnet test tests/Shiny.BluetoothLE.Hubs.Tests
 ```
 
 The tests run the generated hub dispatcher and the generated client proxy against each other through an in-memory "radio", plus diagnostic tests for the generator. No hardware is needed.

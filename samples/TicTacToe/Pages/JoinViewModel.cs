@@ -2,7 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Shiny;
-using Shiny.SmartBle;
+using Shiny.BluetoothLE.Hubs;
 using TicTacToe.Hub;
 using TicTacToe.Services;
 

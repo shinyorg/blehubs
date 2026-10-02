@@ -1,16 +1,16 @@
-# Shiny.SmartBle — Working Notes
+# Shiny.BluetoothLE.Hubs — Working Notes
 
-Guidance for maintaining this repo. Shiny.SmartBle provides **SignalR-style hubs over Bluetooth LE**, built on
+Guidance for maintaining this repo. Shiny.BluetoothLE.Hubs provides **SignalR-style hubs over Bluetooth LE**, built on
 Shiny.BluetoothLE (client) and Shiny.BluetoothLE.Hosting (host). It lives in its own repo, separate from the Shiny
 core monorepo at `~/Desktop/dev/shiny`.
 
 - Code lives in `src/`:
-  - `Shiny.SmartBle`: protocol, serializer, `[BleHubClient]`. It ships the generator in its package.
-  - `Shiny.SmartBle.SourceGenerators`
-  - `Shiny.SmartBle.Host`
-  - `Shiny.SmartBle.Client`
+  - `Shiny.BluetoothLE.Hubs`: protocol, serializer, `[BleHubClient]`. It ships the generator in its package.
+  - `Shiny.BluetoothLE.Hubs.SourceGenerators`
+  - `Shiny.BluetoothLE.Hubs.Host`
+  - `Shiny.BluetoothLE.Hubs.Client`
 - Tests live in `tests/`, the MAUI sample in `samples/TicTacToe`, and the published Claude Code skill in
-  `skills/shiny-smartble`.
+  `skills/shiny-ble-hubs`.
 - **`PLAN.md` is the living design doc**: wire protocol, decisions, status and roadmap.
 
 ## Required updates for EVERY fix & feature
@@ -19,14 +19,14 @@ A change is not "done" until these are in sync:
 
 1. **README.md** (repo root): reflect new or changed behavior. It is also the NuGet package readme.
 2. **PLAN.md**: update the design sections, the decisions table and the status when behavior or a decision changes.
-3. **Skill** (`skills/shiny-smartble/SKILL.md` + `reference/api-reference.md`): the agent-facing "how to generate
+3. **Skill** (`skills/shiny-ble-hubs/SKILL.md` + `reference/api-reference.md`): the agent-facing "how to generate
    correct code" doc. Update the trigger keyword list when a new public API is introduced. The skill syncs to
    `shinyorg/skills` (plugin `shiny`) through `.github/workflows/sync-skills.yml` on pushes to main/v* that touch
    `skills/**`.
-4. **Docs site** (`~/Desktop/dev/documentation`, Astro / Starlight, rendered to https://shinylib.net): SmartBle
+4. **Docs site** (`~/Desktop/dev/documentation`, Astro / Starlight, rendered to https://shinylib.net): BluetoothLE Hubs
    doesn't have a docs section yet. When one is added, record its folder, sidebar node and release notes file here.
    Until then, release notes go in the README's changelog.
-5. **Tests**: every behavior change gets a test in `tests/Shiny.SmartBle.Tests` (see below).
+5. **Tests**: every behavior change gets a test in `tests/Shiny.BluetoothLE.Hubs.Tests` (see below).
 
 ### Release notes
 
@@ -41,7 +41,7 @@ Follow the Shiny convention once the docs section exists:
 ## Architecture rules
 
 - **AOT/trim safe, no reflection.** Dispatch, proxies and pushes are emitted by the source generator, and arguments
-  are serialized one by one with their static type through `ISmartBleSerializer`. Don't add `Activator`,
+  are serialized one by one with their static type through `IBleHubSerializer`. Don't add `Activator`,
   `MethodInfo.Invoke` or reflection-based JSON. New public generics that DI constructs need
   `[DynamicallyAccessedMembers]`.
 - **The libraries target `net10.0` only** and reference only the Shiny BLE abstractions. Platform stacks come from
@@ -68,12 +68,12 @@ Follow the Shiny convention once the docs section exists:
 
 ### Source generator
 
-- `src/Shiny.SmartBle.SourceGenerators`: netstandard2.0, incremental, with equatable models (`EquatableArray`, records
-  only, no symbols in models). It is packed into `Shiny.SmartBle`'s `analyzers/dotnet/cs`. Projects inside this repo
+- `src/Shiny.BluetoothLE.Hubs.SourceGenerators`: netstandard2.0, incremental, with equatable models (`EquatableArray`, records
+  only, no symbols in models). It is packed into `Shiny.BluetoothLE.Hubs`'s `analyzers/dotnet/cs`. Projects inside this repo
   reference it with `OutputItemType="Analyzer"`, because project references don't flow analyzers.
 - It emits:
-  - the client proxy, only when `Shiny.SmartBle.Client` is referenced
-  - push extensions, only when `Shiny.SmartBle.Host` is referenced
+  - the client proxy, only when `Shiny.BluetoothLE.Hubs.Client` is referenced
+  - push extensions, only when `Shiny.BluetoothLE.Hubs.Host` is referenced
   - a dispatcher plus the `IHubContext<THub>.Clients` C# 14 extension property per hub
   - `[ModuleInitializer]` registrations, which fall back to `RuntimeHelpers.RunModuleConstructor`
 - New user-facing mistakes get an `SBH0xx` diagnostic plus a `GeneratorTests` case. Document new diagnostics in
@@ -81,7 +81,7 @@ Follow the Shiny convention once the docs section exists:
 
 ## Tests
 
-`dotnet test tests/Shiny.SmartBle.Tests` must stay green. It runs without hardware:
+`dotnet test tests/Shiny.BluetoothLE.Hubs.Tests` must stay green. It runs without hardware:
 - `FrameCodecTests` / `ArgumentCodecTests`: wire format.
 - `HubTests`: the generated proxy against a real `HubRuntime` through an in-memory radio.
 - `BleHubHostTests`: the real `BleHubHost` against `FakeHostingManager`, an in-memory GATT server, covering services,
@@ -117,7 +117,7 @@ simulator has no Bluetooth and Android emulators are unreliable.
   runs the tests, and compile-checks the sample for Android and iOS. It publishes to NuGet through OIDC on pushes to
   `preview` / `v*`.
 - **Skill sync**: `.github/workflows/sync-skills.yml` opens a PR against `shinyorg/skills` on branch
-  `update-skills-smartble`. It needs the `SKILLS_REPO_TOKEN` secret.
+  `update-skills-ble-hubs`. It needs the `SKILLS_REPO_TOKEN` secret.
 
 ## Blog posts (only when explicitly requested)
 
@@ -141,7 +141,7 @@ asked to blog a feature, produce **two** posts: first the docs-site version, the
   ---
   ```
 - The body is MDX. Reuse components where relevant, e.g. `import NugetBadge from '/src/components/NugetBadge.astro';`
-  then `<NugetBadge name="Shiny.SmartBle" />`.
+  then `<NugetBadge name="Shiny.BluetoothLE.Hubs" />`.
 - Voice: product/release-note tone covering what shipped, breaking changes, code samples and how to use it. **No hero
   image** on this site.
 

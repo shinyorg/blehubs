@@ -5,13 +5,13 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Authors>Allan Ritchie</Authors>
         <Owners>aritchie;shinylib</Owners>
-        <Product>Shiny.SmartBle</Product>
+        <Product>Shiny.BluetoothLE.Hubs</Product>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageProjectUrl>https://shinylib.net</PackageProjectUrl>
         <PackageIcon>icon.png</PackageIcon>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageTags>ble bluetooth bluetoothle hub signalr gatt l2cap ios android maui</PackageTags>
-        <RepositoryUrl>https://github.com/shinyorg/smartble</RepositoryUrl>
+        <RepositoryUrl>https://github.com/shinyorg/bluetoothle-hubs</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
 
         <CI Condition="'$(GITHUB_ACTIONS)' == 'true'">true</CI>

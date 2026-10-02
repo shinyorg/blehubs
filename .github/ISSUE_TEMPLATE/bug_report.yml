@@ -1,12 +1,12 @@
 name: Bug Report
-description: You have found something wrong with Shiny.SmartBle
+description: You have found something wrong with Shiny.BluetoothLE.Hubs
 title: "[Bug]: "
 labels: [bug, unverified]
 body:
   - type: markdown
     attributes:
       value: |
-        Thank you for filing an issue. Please file against the latest version of Shiny.SmartBle from NuGet.
+        Thank you for filing an issue. Please file against the latest version of Shiny.BluetoothLE.Hubs from NuGet.
         If you have questions, please post them in GitHub discussions.
         BLE problems usually depend on BOTH devices - please tell us which device was the host and which was the client.
   - type: dropdown
@@ -15,9 +15,9 @@ body:
       label: Component/Nuget
       description: The package you are filing against
       options:
-        - Protocol / Source Generator (Shiny.SmartBle)
-        - Host (Shiny.SmartBle.Host)
-        - Client (Shiny.SmartBle.Client)
+        - Protocol / Source Generator (Shiny.BluetoothLE.Hubs)
+        - Host (Shiny.BluetoothLE.Hubs.Host)
+        - Client (Shiny.BluetoothLE.Hubs.Client)
         - Tic Tac Toe sample
         - Other
     validations:

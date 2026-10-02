@@ -1,11 +1,11 @@
 {
   "solution": {
-    "path": "SmartBle.slnx",
+    "path": "Shiny.BluetoothLE.Hubs.slnx",
     "projects": [
-      "src/Shiny.SmartBle/Shiny.SmartBle.csproj",
-      "src/Shiny.SmartBle.SourceGenerators/Shiny.SmartBle.SourceGenerators.csproj",
-      "src/Shiny.SmartBle.Host/Shiny.SmartBle.Host.csproj",
-      "src/Shiny.SmartBle.Client/Shiny.SmartBle.Client.csproj"
+      "src/Shiny.BluetoothLE.Hubs/Shiny.BluetoothLE.Hubs.csproj",
+      "src/Shiny.BluetoothLE.Hubs.SourceGenerators/Shiny.BluetoothLE.Hubs.SourceGenerators.csproj",
+      "src/Shiny.BluetoothLE.Hubs.Host/Shiny.BluetoothLE.Hubs.Host.csproj",
+      "src/Shiny.BluetoothLE.Hubs.Client/Shiny.BluetoothLE.Hubs.Client.csproj"
     ]
   }
 }

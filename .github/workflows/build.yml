@@ -39,7 +39,7 @@ jobs:
       run: dotnet build Build.slnf /restore -m -property:Configuration=Release -property:PublicRelease=true
 
     - name: Test
-      run: dotnet test tests/Shiny.SmartBle.Tests -property:Configuration=Release
+      run: dotnet test tests/Shiny.BluetoothLE.Hubs.Tests -property:Configuration=Release
 
     # compile check only - catches generator or API changes that break a real consumer
     - name: Build Sample

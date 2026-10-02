@@ -1,4 +1,4 @@
-# Shiny.SmartBle — Plan
+# Shiny.BluetoothLE.Hubs — Plan
 
 **SignalR-style hubs over Bluetooth LE**, built on **Shiny.BluetoothLE** (client/central) and **Shiny.BluetoothLE.Hosting** (host/peripheral).
 
@@ -9,7 +9,7 @@
 
 Sample: **tic-tac-toe** in .NET MAUI (iOS + Android) using **Shiny.Maui.Shell**.
 
-> History: v0 dispatched Shiny.Mediator contracts over BLE. On 2026-10-02 it was replaced by the hub model below. Mediator is no longer a dependency. The wire framing, transport, handshake and file transfer were kept.
+> History: v0 dispatched Shiny.Mediator contracts over BLE. On 2026-10-02 it was replaced by the hub model below. Mediator is no longer a dependency. The wire framing, transport, handshake and file transfer were kept. The library was named Shiny.SmartBle until 2026-10-02.
 
 ---
 
@@ -35,7 +35,7 @@ public interface IGameHub
 
 ### Host
 ```csharp
-services.AddBleSmartHub<GameHub>("<service uuid>", "<characteristic uuid>");
+services.AddBleHub<GameHub>("<service uuid>", "<characteristic uuid>");
 services.ConfigureBleHubHost(o => { o.LocalName = "TTT"; o.EnableFileTransfers(dir); });
 
 public class GameHub(GameEngine engine) : BleHub<IGameHub>
@@ -123,7 +123,7 @@ The body is `[name length:1][name utf8][payload]`. Frames are reassembled per (p
 | 0x30 | Push | H→C | event | arguments |
 | 0x40 | Disconnect | H→C | – | `DisconnectInfo` (reason) |
 
-**Arguments**: `[count:1]` followed by `count × ([length:4][serialized value])`. Each value is serialized with its static type through `ISmartBleSerializer`, which keeps it AOT-safe.
+**Arguments**: `[count:1]` followed by `count × ([length:4][serialized value])`. Each value is serialized with its static type through `IBleHubSerializer`, which keeps it AOT-safe.
 
 **Rules**
 - Client message ids are 1..0x7FFF. Host-allocated ids (pushes, disconnect) have the high bit set.
@@ -136,11 +136,11 @@ The body is `[name length:1][name utf8][payload]`. Frames are reassembled per (p
 - The host sends each message to a peer under a lock, so frames for one peer never interleave. The client also serializes its writes per message.
 - The host refuses any hub call made before the handshake, and refuses unknown protocol versions.
 
-## 4. Source generator (`Shiny.SmartBle.SourceGenerators`, shipped in the core package)
+## 4. Source generator (`Shiny.BluetoothLE.Hubs.SourceGenerators`, shipped in the core package)
 
 For each `[BleHubClient]` interface, the generator emits:
-- **Client proxy**, emitted when `Shiny.SmartBle.Client` is referenced. `GameHubClient : BleHubClient, IGameHub, IBleHubClient<IGameHub>` implements each method through `Invoke` / `Stream`, implements the events, and dispatches pushes to them. A `[ModuleInitializer]` registers a factory so `AddBleHubClient<IGameHub>()` can create the proxy without reflection.
-- **Typed push senders**, emitted when `Shiny.SmartBle.Host` is referenced and a hub uses the contract. These are extension methods on `BleHubPush<IGameHub>`, such as `StateChanged(GameState)`.
+- **Client proxy**, emitted when `Shiny.BluetoothLE.Hubs.Client` is referenced. `GameHubClient : BleHubClient, IGameHub, IBleHubClient<IGameHub>` implements each method through `Invoke` / `Stream`, implements the events, and dispatches pushes to them. A `[ModuleInitializer]` registers a factory so `AddBleHubClient<IGameHub>()` can create the proxy without reflection.
+- **Typed push senders**, emitted when `Shiny.BluetoothLE.Hubs.Host` is referenced and a hub uses the contract. These are extension methods on `BleHubPush<IGameHub>`, such as `StateChanged(GameState)`.
 
 For each `class X : BleHub<TContract>`, the generator emits:
 - **Dispatcher**: a switch on the method name, typed argument reads, a call into the hub, and result serialization. It is registered through a `[ModuleInitializer]`.
@@ -161,9 +161,9 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
 | SBH005 | `BleHub<T>` where `T` isn't a `[BleHubClient]` interface |
 | SBH006 | `ref` / `out` / `in` parameters, or more than 255 parameters |
 
-## 5. Host (`Shiny.SmartBle.Host`)
+## 5. Host (`Shiny.BluetoothLE.Hubs.Host`)
 
-- **`AddBleSmartHub<THub>(serviceUuid, characteristicUuid)`**:
+- **`AddBleHub<THub>(serviceUuid, characteristicUuid)`**:
   - registers the hub as transient, created in a new DI scope for each invocation (like SignalR)
   - registers `IHubContext<THub>`
   - registers the shared `IBleHubHost`
@@ -188,10 +188,10 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
   - `ConnectedClients`
   - `Disconnect(connectionId, reason)`
 - **Disconnect is cooperative.** iOS `CBPeripheralManager` can't drop a central, so the host sends `Disconnect` and forgets the client. The client library disconnects itself when it receives it.
-- **Client options**: `MaxClients` and `ValidateClient` (return a rejection reason) are set per hub through `AddBleSmartHub(..., o => ...)`.
+- **Client options**: `MaxClients` and `ValidateClient` (return a rejection reason) are set per hub through `AddBleHub(..., o => ...)`.
 - **Cleanup**: a peer that unsubscribes is removed right away. A periodic sweep also removes peers that no longer appear in `SubscribedCentrals`, because Android doesn't always report the unsubscribe.
 
-## 6. Client (`Shiny.SmartBle.Client`)
+## 6. Client (`Shiny.BluetoothLE.Hubs.Client`)
 
 - **`BleHubClient`** is the base class for the generated proxies. `IBleHubClient<TContract>` exposes:
   - `Hub`
@@ -207,10 +207,10 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
   - `HostName`, `CanTransferFiles`
   - `UploadFile` / `UploadStream` / `DownloadFile`
 - **Calls**:
-  - A per-call timeout comes from `SmartBleOptions.RequestTimeout`. Streams have no overall timeout.
+  - A per-call timeout comes from `BleHubProtocolOptions.RequestTimeout`. Streams have no overall timeout.
   - A `CancellationToken` sends `Cancel` to the host.
-  - A host exception becomes `SmartBleRemoteException`.
-  - A dropped connection fails every pending call with `SmartBleDisconnectedException`.
+  - A host exception becomes `BleHubRemoteException`.
+  - A dropped connection fails every pending call with `BleHubDisconnectedException`.
 - Pushes are raised on a background thread. UI code marshals them to the main thread.
 
 ## 6a. File transfer (L2CAP)
@@ -219,8 +219,8 @@ Files don't go through hub framing. They use a separate L2CAP channel, and the c
 
 - **Host**: `ConfigureBleHubHost(o => o.EnableFileTransfers(dir, ft => ...))`.
   - **Directory mode**, the default, wraps `OpenL2CapFileServer`: upload and download flags, `MaxUploadSize`, overwrite rules and an `Authorize` hook. Shiny refuses path traversal.
-  - **Custom mode** registers `ISmartBleFileHandler`, which wraps `HandleL2CapRequests`.
-- **PSM discovery**: the platform assigns the PSM at runtime, and it reaches the client in every hub's `HandshakeAck` together with the secure flag. On Android the secure and insecure channels listen separately, so the client must open the matching one. A PSM of 0 means file transfer is unavailable, and the file calls throw `SmartBleFileTransferNotSupportedException`.
+  - **Custom mode** registers `IBleHubFileHandler`, which wraps `HandleL2CapRequests`.
+- **PSM discovery**: the platform assigns the PSM at runtime, and it reaches the client in every hub's `HandshakeAck` together with the secure flag. On Android the secure and insecure channels listen separately, so the client must open the matching one. A PSM of 0 means file transfer is unavailable, and the file calls throw `BleHubFileTransferNotSupportedException`.
 - **Client**: `UploadFile`, `UploadStream` and `DownloadFile` map to Shiny's `IPeripheral.UploadFile` / `DownloadFile` and to the L2CAP channel extensions.
 - **Platforms**: iOS/macOS, and Android API 29+. Elsewhere the host serves PSM 0 and logs a warning.
 - **Identifying the client**: the L2CAP peer is matched to the hub's connected client by peer id where possible.
@@ -228,13 +228,13 @@ Files don't go through hub framing. They use a separate L2CAP channel, and the c
 ## 7. Repo layout
 
 ```
-SmartBle.slnx
+Shiny.BluetoothLE.Hubs.slnx
 Directory.Build.props, Directory.Packages.props (central package management)
-src/Shiny.SmartBle/                    net10.0: framing, arguments codec, serializer, options, [BleHubClient], exceptions
-src/Shiny.SmartBle.SourceGenerators/   netstandard2.0 Roslyn generator (packed into the core package's analyzers folder)
-src/Shiny.SmartBle.Host/               BleHub, IBleHubHost, IHubContext, groups, L2CAP file server
-src/Shiny.SmartBle.Client/             BleHubClient, discovery, connection sharing, file transfer
-tests/Shiny.SmartBle.Tests/            xUnit: framing, codec, generated hub + proxy end to end over an in-memory radio
+src/Shiny.BluetoothLE.Hubs/                    net10.0: framing, arguments codec, serializer, options, [BleHubClient], exceptions
+src/Shiny.BluetoothLE.Hubs.SourceGenerators/   netstandard2.0 Roslyn generator (packed into the core package's analyzers folder)
+src/Shiny.BluetoothLE.Hubs.Host/               BleHub, IBleHubHost, IHubContext, groups, L2CAP file server
+src/Shiny.BluetoothLE.Hubs.Client/             BleHubClient, discovery, connection sharing, file transfer
+tests/Shiny.BluetoothLE.Hubs.Tests/            xUnit: framing, codec, generated hub + proxy end to end over an in-memory radio
 samples/TicTacToe/                     .NET MAUI (iOS + Android), Shiny.Maui.Shell
 ```
 
@@ -269,7 +269,7 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
 | GATT | One write+notify characteristic per hub, routed by characteristic UUID |
 | Platforms | iOS + Android in both roles. Windows can't host |
 | Payload size | Hub messages are chunked over GATT, 256 KB max by default. Files go over L2CAP |
-| Serialization | Pluggable `ISmartBleSerializer`. The default is Shiny's AOT JSON, using contexts registered with `Json.AddContext` |
+| Serialization | Pluggable `IBleHubSerializer`. The default is Shiny's AOT JSON, using contexts registered with `Json.AddContext` |
 | Background | Foreground only |
 | Auth / security | None in v1, apart from opt-in exposure and the `ValidateClient` handshake hook |
 

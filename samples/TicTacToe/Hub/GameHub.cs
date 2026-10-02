@@ -1,4 +1,4 @@
-using Shiny.SmartBle;
+using Shiny.BluetoothLE.Hubs;
 using TicTacToe.Game;
 using TicTacToe.Services;
 

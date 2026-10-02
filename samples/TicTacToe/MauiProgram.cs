@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Shiny;
-using Shiny.SmartBle;
+using Shiny.BluetoothLE.Hubs;
 using TicTacToe.Game;
 using TicTacToe.Hub;
 using TicTacToe.Services;
@@ -46,7 +46,7 @@ public static class MauiProgram
         builder.Services.AddBluetoothLeHosting();
 
         // host side
-        builder.Services.AddBleSmartHub<GameHub>(GameServiceUuid, GameHubCharacteristicUuid, o =>
+        builder.Services.AddBleHub<GameHub>(GameServiceUuid, GameHubCharacteristicUuid, o =>
         {
             o.MaxClients = 6; // 1 opponent + spectators
             o.ValidateClient = info => String.IsNullOrWhiteSpace(info.Name) ? "A player name is required" : null;

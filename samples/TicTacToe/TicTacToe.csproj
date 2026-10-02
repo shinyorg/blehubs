@@ -9,8 +9,8 @@
         <SingleProject>true</SingleProject>
         <MauiXamlInflator>SourceGen</MauiXamlInflator>
 
-        <ApplicationTitle>SmartBle TicTacToe</ApplicationTitle>
-        <ApplicationId>org.shiny.smartble.tictactoe</ApplicationId>
+        <ApplicationTitle>BLE Hubs TicTacToe</ApplicationTitle>
+        <ApplicationId>org.shiny.bluetoothle.hubs.tictactoe</ApplicationId>
         <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
         <ApplicationVersion>1</ApplicationVersion>
 
@@ -38,10 +38,10 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\src\Shiny.SmartBle.Client\Shiny.SmartBle.Client.csproj" />
-        <ProjectReference Include="..\..\src\Shiny.SmartBle.Host\Shiny.SmartBle.Host.csproj" />
-        <!-- comes with the Shiny.SmartBle package when consumed from NuGet -->
-        <ProjectReference Include="..\..\src\Shiny.SmartBle.SourceGenerators\Shiny.SmartBle.SourceGenerators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+        <ProjectReference Include="..\..\src\Shiny.BluetoothLE.Hubs.Client\Shiny.BluetoothLE.Hubs.Client.csproj" />
+        <ProjectReference Include="..\..\src\Shiny.BluetoothLE.Hubs.Host\Shiny.BluetoothLE.Hubs.Host.csproj" />
+        <!-- comes with the Shiny.BluetoothLE.Hubs package when consumed from NuGet -->
+        <ProjectReference Include="..\..\src\Shiny.BluetoothLE.Hubs.SourceGenerators\Shiny.BluetoothLE.Hubs.SourceGenerators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     </ItemGroup>
 
 </Project>
