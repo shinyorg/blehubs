@@ -23,14 +23,30 @@ A change is not "done" until these are in sync:
    correct code" doc. Update the trigger keyword list when a new public API is introduced. The skill syncs to
    `shinyorg/skills` (plugin `shiny`) through `.github/workflows/sync-skills.yml` on pushes to main/v* that touch
    `skills/**`.
-4. **Docs site** (`~/Desktop/dev/documentation`, Astro / Starlight, rendered to https://shinylib.net): BluetoothLE Hubs
-   doesn't have a docs section yet. When one is added, record its folder, sidebar node and release notes file here.
-   Until then, release notes go in the README's changelog.
+4. **Docs site** (`~/Desktop/dev/documentation`, Astro / Starlight, rendered to https://shinylib.net/blehubs/):
+   - **Feature pages**: `src/content/docs/blehubs/*.mdx`:
+     - `index` (Getting Started, setup, platforms)
+     - `contracts` (`[BleHubClient]`, generated code, diagnostics)
+     - `hosting` (`BleHub<T>`, `IHubContext`, groups, start/stop)
+     - `client` (discovery, calls, events, failures)
+     - `files` (L2CAP)
+     - `how-it-works` (GATT layout, framing, limits, best practices)
+   - **Release notes**: `src/content/docs/blehubs/release-notes.mdx`. This is its own file, not the Shiny client
+     monorepo's shared notes, because this library ships from its own repo with its own version.
+   - **Menu**: `src/sidebar-topics.mjs`, the **BluetoothLE Hubs** node under the *Hardware & Connectivity* topic, right
+     after BluetoothLE Hosting. Add or update an item when you add a page.
+   - **Homepage catalog**: the `BluetoothLE Hubs` entry in `src/data/libraryCatalog.ts` (tagline, summary,
+     highlights, packages). The build fails if a sidebar library has no catalog entry, and its `label` must match the
+     sidebar.
+   - **Skills**: the skill is listed in `src/content/docs/foundation/ai-skills.mdx` and in the `skills` list in
+     `src/components/AiSkill.astro`.
+   - **Moving or renaming a page** needs a redirect in `astro.config.mjs`.
+   - Run `npm run build` in the docs repo after changes, because MDX errors only surface at build time.
 5. **Tests**: every behavior change gets a test in `tests/Shiny.BluetoothLE.Hubs.Tests` (see below).
 
 ### Release notes
 
-Follow the Shiny convention once the docs section exists:
+Release notes live in `blehubs/release-notes.mdx` on the docs site:
 - Use the `<RN>` component with `type="feature|enhancement|fix|chore"`, an optional `breaking` flag and an optional
   `platform`.
 - Group under `## v<major>` → `### <version> - <date>`. Use `### <version> - TBD` for unreleased work.

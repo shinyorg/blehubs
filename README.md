@@ -94,7 +94,4 @@ dotnet test tests/Shiny.BluetoothLE.Hubs.Tests
 
 The tests run the generated hub dispatcher and the generated client proxy against each other through an in-memory "radio", plus diagnostic tests for the generator. No hardware is needed.
 
-## Changelog
-
-### 1.0.0-alpha - TBD
-- Initial release: source generated BLE hubs (calls, streams, typed pushes, groups, lifecycle hooks, per-hub start/stop), generated client proxies with shared connections, and L2CAP file transfers.
+Documentation and release notes: https://shinylib.net/blehubs/
