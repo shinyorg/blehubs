@@ -132,10 +132,6 @@ public partial class GameViewModel : ObservableObject,
     }
 
 
-    [RelayCommand]
-    Task Leave() => this.shell.Navigator.PopToRoot();
-
-
     public async Task<bool> CanNavigate()
     {
         if (!this.session.IsActive)
@@ -220,12 +216,16 @@ public partial class GameViewModel : ObservableObject,
             this.xAvatarFile = state.XAvatar;
             var path = await this.session.GetAvatar(state.XAvatar);
             this.XAvatar = path == null ? null : ImageSource.FromFile(path);
+            if (path == null && this.xAvatarFile == state.XAvatar)
+                this.xAvatarFile = null; // try again on the next board update
         }
         if (state.OAvatar != this.oAvatarFile)
         {
             this.oAvatarFile = state.OAvatar;
             var path = await this.session.GetAvatar(state.OAvatar);
             this.OAvatar = path == null ? null : ImageSource.FromFile(path);
+            if (path == null && this.oAvatarFile == state.OAvatar)
+                this.oAvatarFile = null; // try again on the next board update
         }
     }
 

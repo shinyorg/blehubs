@@ -145,8 +145,10 @@ public class GameSession
             {
                 try
                 {
+                    // a stalled transfer must not hold up joining the game
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
                     avatarFile = $"avatar-{Guid.NewGuid():N}.jpg";
-                    await this.client.UploadFile(avatarPath, avatarFile);
+                    await this.client.UploadFile(avatarPath, avatarFile, cancellationToken: cts.Token);
                 }
                 catch (Exception ex)
                 {
@@ -236,7 +238,8 @@ public class GameSession
         try
         {
             Directory.CreateDirectory(ClientCacheDirectory);
-            await this.client.DownloadFile(file, local);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await this.client.DownloadFile(file, local, cancellationToken: cts.Token);
             return local;
         }
         catch (Exception ex)
