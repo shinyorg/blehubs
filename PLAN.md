@@ -272,6 +272,7 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
 | Serialization | Pluggable `IBleHubSerializer`. The default is Shiny's AOT JSON, using contexts registered with `Json.AddContext` |
 | Background | Foreground only |
 | Auth / security | None in v1, apart from opt-in exposure and the `ValidateClient` handshake hook |
+| Other transports (§13) | Hidden host and client seams in this repo. Wi-Fi itself (Switchboard, mDNS, transport choice) lives in Shiny.SwitchboardR, its own repo, which references this one through NuGet |
 
 ## 10. Status
 
@@ -282,6 +283,7 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
   - `Context.Abort()` inside a hub method takes effect after that method's reply is sent.
   - Per-hub start/stop added. A fake `IBleHostingManager` now tests `BleHubHost` itself: GATT writes and notifications, shared and separate services, advertising updates and restarts. 63 tests pass.
   - **Not yet verified:** a real two-device run.
+- **2026-10-08**: transport seams added (§13) for Shiny.SwitchboardR, which serves hubs over Wi-Fi from its own repo. 76 tests pass.
 
 ## 11. Future
 
@@ -299,3 +301,9 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
 - When an iOS host is backgrounded, it advertises only through the overflow area and without a local name. This is out of scope (foreground only).
 - 31-byte advertisements: a 128-bit UUID plus a long local name may not fit. Keep `LocalName` short.
 - Throughput with write-with-response is a few KB/s, which is fine for game- and command-sized messages.
+
+## 13. Other transports
+
+Hidden seams let another package carry hubs over something other than BLE: `IHubContext<THub>.TransportEndpoint` on the
+host and `BleHubClient.ConnectExternal` on the client. Their design, and the Wi-Fi transport built on them, live in
+**Shiny.SwitchboardR**'s PLAN.md (`~/Desktop/dev/SwitchboardR`, §2).

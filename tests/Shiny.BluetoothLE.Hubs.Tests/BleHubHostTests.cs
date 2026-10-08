@@ -27,7 +27,7 @@ public class BleHubHostTests : IAsyncLifetime
     public async ValueTask DisposeAsync() => await this.services.DisposeAsync();
 
 
-    void Build(string secondService)
+    void Build(string secondService, TimeSpan? sweepInterval = null)
     {
         this.services = new ServiceCollection()
             .AddSingleton<HubLog>()
@@ -41,7 +41,7 @@ public class BleHubHostTests : IAsyncLifetime
                 new BleHubRegistration(typeof(TestHub), ServiceA, TestChar, new BleHubOptions()),
                 new BleHubRegistration(typeof(SecondHub), secondService, SecondChar, new BleHubOptions())
             ],
-            new BleHubHostOptions { LocalName = "Host", ClientSweepInterval = TimeSpan.FromMinutes(5) },
+            new BleHubHostOptions { LocalName = "Host", ClientSweepInterval = sweepInterval ?? TimeSpan.FromMinutes(5) },
             this.options,
             this.serializer,
             this.services
@@ -204,5 +204,38 @@ public class BleHubHostTests : IAsyncLifetime
         Assert.False(this.testHub.IsRunning);
         Assert.False(this.secondHub.IsRunning);
         Assert.False(this.hosting.IsAdvertising);
+    }
+
+
+    [Fact]
+    public async Task SweepLeavesClientsOnOtherTransportsAlone()
+    {
+        this.Build(ServiceA, TimeSpan.FromMilliseconds(50));
+        await this.testHub.Start();
+
+        var channel = new RecordingChannel();
+        var rejection = await this.testHub.TransportEndpoint.Connect("wifi-1", new Protocol.HandshakeInfo(1, "WiFi", null, null), channel, CancellationToken.None);
+        Assert.Null(rejection);
+
+        // several sweeps - the client is not a GATT subscriber, but it must not be reaped
+        await Task.Delay(300);
+        Assert.Single(this.testHub.ConnectedClients);
+
+        await this.testHub.Stop("bye");
+        Assert.Equal("bye", channel.DisconnectReason);
+        Assert.Empty(this.testHub.ConnectedClients);
+    }
+
+
+    sealed class RecordingChannel : IBleHubPeerChannel
+    {
+        public string? DisconnectReason { get; private set; }
+        public Task Push(string eventName, byte[] arguments, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task Disconnect(string? reason, CancellationToken cancellationToken)
+        {
+            this.DisconnectReason = reason;
+            return Task.CompletedTask;
+        }
     }
 }

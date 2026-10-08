@@ -340,7 +340,8 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
             try
             {
                 var subscribed = ch.SubscribedCentrals.Select(x => x.Uuid).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                foreach (var peer in runtime.Peers.ToList())
+                // clients on another transport aren't GATT subscribers - that transport reports when they leave
+                foreach (var peer in runtime.Peers.Where(x => x.Channel == null).ToList())
                 {
                     if (!subscribed.Contains(peer.Id))
                         runtime.OnPeerGone(peer.Id, "Connection lost");

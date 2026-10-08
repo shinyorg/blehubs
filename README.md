@@ -68,6 +68,8 @@ services.AddBleHubClient<IGameHub>(ServiceUuid, CharacteristicUuid);   // inject
 - **Disconnect is cooperative**, because iOS peripherals can't drop a central. `Context.Abort()` and `IHubContext.Disconnect()` ask the client to leave. The client library does so and raises `Disconnected` with the reason.
 - **Multiple hubs**: each hub needs its own characteristic. Sharing one service UUID is recommended so the advertisement holds only one 128-bit UUID. Hub clients on the same device share one BLE connection.
 
+- **Over Wi-Fi too**: [Shiny.SwitchboardR](https://github.com/shinyorg/switchboardr) serves the same hubs over Wi-Fi (with mDNS discovery) alongside BLE, and lets clients connect over whichever transport is available, with no change to hub or contract code. It builds on hidden transport seams in this library (`IHubContext<THub>.TransportEndpoint`, `BleHubClient.ConnectExternal`).
+
 See [PLAN.md](PLAN.md) for the wire protocol, the design decisions and the roadmap.
 
 ## Sample: Tic Tac Toe

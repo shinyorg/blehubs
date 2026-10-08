@@ -45,8 +45,15 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
 
     public bool CanTransferFiles =>
         this.Status == BleHubClientStatus.Connected
-        && this.connection?.Ack?.FileTransferPsm > 0
-        && this.connection.Host?.Peripheral.IsL2CapAvailable() == true;
+        && (this.connection?.External is { } external
+            ? external.CanTransferFiles
+            : this.connection?.Ack?.FileTransferPsm > 0 && this.connection.Host?.Peripheral.IsL2CapAvailable() == true);
+
+    /// <summary>
+    /// The transport carrying this connection when it isn't BLE, otherwise null
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public IBleHubClientTransport? ExternalTransport => this.connection?.External;
 
     public event EventHandler<BleHubStatusChangedEventArgs>? StatusChanged;
     public event EventHandler? Connected;
@@ -152,6 +159,40 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     }
 
 
+    /// <summary>
+    /// Connects over a transport other than BLE. <paramref name="createTransport"/> receives the callbacks for pushes and
+    /// closes, and returns the transport for this one connection.
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public async Task ConnectExternal(
+        Func<IBleHubClientTransportEvents, IBleHubClientTransport> createTransport,
+        BleHubConnectOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(createTransport);
+        await this.connectLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            this.AssertDisconnected();
+            var conn = this.Begin(null);
+            conn.External = createTransport(new ExternalEvents(this, conn));
+
+            var ack = await conn.External.Handshake(this.CreateHandshake(options), cancellationToken).ConfigureAwait(false);
+            this.Accept(conn, ack, 0);
+        }
+        catch (Exception ex)
+        {
+            await this.Teardown(ex.Message, true).ConfigureAwait(false);
+            throw;
+        }
+        finally
+        {
+            this.connectLock.Release();
+        }
+    }
+
+
     internal void ReceiveFrame(ReadOnlySpan<byte> frame) => this.protocol.OnFrame(frame);
 
     /// <summary>
@@ -163,25 +204,53 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     public Task Disconnect() => this.Teardown("Disconnected", true);
 
 
-    public Task<L2CapTransferResult> UploadFile(string localFilePath, string? remoteFileName = null, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default)
+    public async Task<L2CapTransferResult> UploadFile(string localFilePath, string? remoteFileName = null, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default)
     {
+        if (this.AssertExternalFiles() is { } external)
+        {
+            await using var file = File.OpenRead(localFilePath);
+            return await external.Upload(file, file.Length, remoteFileName ?? Path.GetFileName(localFilePath), progress, cancellationToken).ConfigureAwait(false);
+        }
+
         var (p, ack) = this.AssertFiles();
-        return p.UploadFile(ack.FileTransferPsm, localFilePath, remoteFileName, ack.FileTransferSecure, ToAction(progress), null, cancellationToken);
+        return await p.UploadFile(ack.FileTransferPsm, localFilePath, remoteFileName, ack.FileTransferSecure, ToAction(progress), null, cancellationToken).ConfigureAwait(false);
     }
 
 
     public async Task<L2CapTransferResult> UploadStream(Stream source, long length, string remoteFileName, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default)
     {
+        if (this.AssertExternalFiles() is { } external)
+            return await external.Upload(source, length, remoteFileName, progress, cancellationToken).ConfigureAwait(false);
+
         var (p, ack) = this.AssertFiles();
         using var channel = await p.OpenL2CapChannelAsync(ack.FileTransferPsm, ack.FileTransferSecure, cancellationToken).ConfigureAwait(false);
         return await channel.UploadFile(source, remoteFileName, length, ToAction(progress), null, cancellationToken).ConfigureAwait(false);
     }
 
 
-    public Task<L2CapTransferResult> DownloadFile(string remoteFileName, string localFilePath, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default)
+    public async Task<L2CapTransferResult> DownloadFile(string remoteFileName, string localFilePath, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default)
     {
+        if (this.AssertExternalFiles() is { } external)
+        {
+            var temp = localFilePath + ".part";
+            try
+            {
+                L2CapTransferResult result;
+                await using (var file = File.Create(temp))
+                    result = await external.Download(remoteFileName, file, progress, cancellationToken).ConfigureAwait(false);
+
+                File.Move(temp, localFilePath, true);
+                return result;
+            }
+            finally
+            {
+                if (File.Exists(temp))
+                    File.Delete(temp);
+            }
+        }
+
         var (p, ack) = this.AssertFiles();
-        return p.DownloadFile(ack.FileTransferPsm, remoteFileName, localFilePath, ack.FileTransferSecure, ToAction(progress), null, cancellationToken);
+        return await p.DownloadFile(ack.FileTransferPsm, remoteFileName, localFilePath, ack.FileTransferSecure, ToAction(progress), null, cancellationToken).ConfigureAwait(false);
     }
 
 
@@ -198,7 +267,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     protected async Task<T> InvokeCore<T>(string method, BleHubArgumentWriter arguments, CancellationToken cancellationToken)
     {
         this.AssertConnected();
-        var result = await this.protocol.Invoke(method, arguments.ToArray(), cancellationToken).ConfigureAwait(false);
+        var result = await this.InvokeRaw(method, arguments.ToArray(), cancellationToken).ConfigureAwait(false);
         return this.services.Serializer.Deserialize<T>(result.Span);
     }
 
@@ -207,7 +276,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     protected async Task InvokeVoidCore(string method, BleHubArgumentWriter arguments, CancellationToken cancellationToken)
     {
         this.AssertConnected();
-        await this.protocol.Invoke(method, arguments.ToArray(), cancellationToken).ConfigureAwait(false);
+        await this.InvokeRaw(method, arguments.ToArray(), cancellationToken).ConfigureAwait(false);
     }
 
 
@@ -215,8 +284,70 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     protected async IAsyncEnumerable<T> StreamCore<T>(string method, BleHubArgumentWriter arguments, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         this.AssertConnected();
-        await foreach (var item in this.protocol.Stream(method, arguments.ToArray(), cancellationToken).ConfigureAwait(false))
+        var items = this.connection?.External is { } external
+            ? this.ExternalStream(external, method, arguments.ToArray(), cancellationToken)
+            : this.protocol.Stream(method, arguments.ToArray(), cancellationToken);
+
+        await foreach (var item in items.ConfigureAwait(false))
             yield return this.services.Serializer.Deserialize<T>(item.Span);
+    }
+
+
+    Task<ReadOnlyMemory<byte>> InvokeRaw(string method, byte[] arguments, CancellationToken cancellationToken)
+        => this.connection?.External is { } external
+            ? this.ExternalInvoke(external, method, arguments, cancellationToken)
+            : this.protocol.Invoke(method, arguments, cancellationToken);
+
+
+    async Task<ReadOnlyMemory<byte>> ExternalInvoke(IBleHubClientTransport external, string method, byte[] arguments, CancellationToken cancellationToken)
+    {
+        this.AssertPayload(arguments);
+        var conn = this.connection ?? throw new BleHubDisconnectedException("Not connected to a host");
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, conn.Lifetime.Token);
+        cts.CancelAfter(this.services.Options.RequestTimeout);
+        try
+        {
+            return await external.Invoke(method, arguments, cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw conn.Lifetime.IsCancellationRequested
+                ? new BleHubDisconnectedException("The connection to the host was closed", conn.CloseReason)
+                : new TimeoutException($"No reply from the host within {this.services.Options.RequestTimeout}");
+        }
+    }
+
+
+    async IAsyncEnumerable<ReadOnlyMemory<byte>> ExternalStream(IBleHubClientTransport external, string method, byte[] arguments, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        this.AssertPayload(arguments);
+        var conn = this.connection ?? throw new BleHubDisconnectedException("Not connected to a host");
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, conn.Lifetime.Token);
+        await using var e = external.Stream(method, arguments, cts.Token).GetAsyncEnumerator(cts.Token);
+
+        while (true)
+        {
+            bool next;
+            try
+            {
+                next = await e.MoveNextAsync().ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && conn.Lifetime.IsCancellationRequested)
+            {
+                throw new BleHubDisconnectedException("The connection to the host was closed", conn.CloseReason);
+            }
+            if (!next)
+                yield break;
+
+            yield return e.Current;
+        }
+    }
+
+
+    void AssertPayload(byte[] arguments)
+    {
+        if (arguments.Length > this.services.Options.MaxPayloadSize)
+            throw new BleHubException($"Payload is {arguments.Length} bytes which exceeds MaxPayloadSize ({this.services.Options.MaxPayloadSize}) - send large content as a file");
     }
 
 
@@ -247,13 +378,21 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     async Task Complete(Connection conn, int mtu, BleHubConnectOptions? options, CancellationToken cancellationToken)
     {
         this.protocol.Mtu = mtu;
-        var ack = await this.protocol.Handshake(new HandshakeInfo(
-            FrameCodec.ProtocolVersion,
-            options?.Name,
-            options?.AppVersion,
-            options?.Properties
-        ), cancellationToken).ConfigureAwait(false);
+        var ack = await this.protocol.Handshake(this.CreateHandshake(options), cancellationToken).ConfigureAwait(false);
+        this.Accept(conn, ack, mtu);
+    }
 
+
+    HandshakeInfo CreateHandshake(BleHubConnectOptions? options) => new(
+        FrameCodec.ProtocolVersion,
+        options?.Name,
+        options?.AppVersion,
+        options?.Properties
+    );
+
+
+    void Accept(Connection conn, HandshakeAck ack, int mtu)
+    {
         if (!ack.Accepted)
             throw new BleHubException($"Host refused the connection: {ack.Reason}");
 
@@ -297,6 +436,21 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
 
         conn.Pushes.Writer.TryComplete();
         this.protocol.FailAll(new BleHubDisconnectedException("The connection to the host was closed", reason));
+        conn.CloseReason = reason;
+        conn.Lifetime.Cancel();
+
+        if (conn.External != null && cancelConnection)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await conn.External.Close(cts.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                this.logger?.LogDebug(ex, "Transport did not close cleanly");
+            }
+        }
 
         var p = conn.Host?.Peripheral;
         if (p != null && conn.OwnsBleConnection && this.services.Connections.Release(p.Uuid) && cancelConnection)
@@ -339,6 +493,19 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     }
 
 
+    IBleHubClientTransport? AssertExternalFiles()
+    {
+        this.AssertConnected();
+        if (this.connection?.External is not { } external)
+            return null;
+
+        if (!external.CanTransferFiles)
+            throw new BleHubFileTransferNotSupportedException("The host does not serve file transfers");
+
+        return external;
+    }
+
+
     (IPeripheral Peripheral, HandshakeAck Ack) AssertFiles()
     {
         this.AssertConnected();
@@ -368,12 +535,29 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         => progress == null ? null : progress.Report;
 
 
+    sealed class ExternalEvents(BleHubClient client, Connection conn) : IBleHubClientTransportEvents
+    {
+        public void Pushed(string eventName, ReadOnlyMemory<byte> arguments)
+            => conn.Pushes.Writer.TryWrite(new BleHubMessage(FrameKind.Push, 0, eventName, arguments));
+
+        public void Closed(string? reason)
+        {
+            // only the connection this transport was created for - a late close from an old transport must not end a new one
+            if (ReferenceEquals(client.connection, conn))
+                _ = client.Teardown(reason ?? "Connection lost", false);
+        }
+    }
+
+
     sealed class Connection(BleHubHostInfo? host)
     {
         public BleHubHostInfo? Host { get; } = host;
         public HandshakeAck? Ack { get; set; }
         public bool OwnsBleConnection { get; set; }
         public Func<byte[], CancellationToken, Task>? Write { get; set; }
+        public IBleHubClientTransport? External { get; set; }
+        public CancellationTokenSource Lifetime { get; } = new();
+        public string? CloseReason { get; set; }
         public List<IDisposable> Subscriptions { get; } = new();
         public Channel<BleHubMessage> Pushes { get; } = Channel.CreateUnbounded<BleHubMessage>(new UnboundedChannelOptions { SingleReader = true });
     }

@@ -39,6 +39,12 @@ public interface IHubContext<THub> where THub : class
     Task Disconnect(string connectionId, string? reason = null);
 
     /// <summary>
+    /// Serves this hub over another transport (Wi-Fi, ...) alongside BLE
+    /// </summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    IBleHubTransportEndpoint TransportEndpoint { get; }
+
+    /// <summary>
     /// Used by the generated <c>Clients</c> extension property
     /// </summary>
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
@@ -59,6 +65,7 @@ internal sealed class HubContext<THub>(Func<HubRuntime> getRuntime, BleHubHost? 
         => (host ?? throw new InvalidOperationException("No BLE host is available")).StopHub(this.Runtime, reason);
 
     public IGroupManager Groups => this.Runtime;
+    public IBleHubTransportEndpoint TransportEndpoint => this.Runtime;
     public IReadOnlyList<BleHubConnectedClient> ConnectedClients => this.Runtime.Clients;
 
     public event EventHandler<BleHubConnectedClient>? ClientConnected
