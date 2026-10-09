@@ -60,9 +60,18 @@ Release notes live in `blehubs/release-notes.mdx` on the docs site:
   are serialized one by one with their static type through `IBleHubSerializer`. Don't add `Activator`,
   `MethodInfo.Invoke` or reflection-based JSON. New public generics that DI constructs need
   `[DynamicallyAccessedMembers]`.
-- **The libraries target `net10.0` only** and reference only the Shiny BLE abstractions. Platform stacks come from
-  the app (`AddBluetoothLE()` / `AddBluetoothLeHosting()`). Don't add platform target frameworks unless a platform
-  API is truly needed.
+- **Targets.** The core package is `net10.0` only. The host and client packages multi-target `net10.0`,
+  `-android`, `-ios` and `-maccatalyst` (`PlatformTargetFrameworks` in Directory.Build.props) for one reason: so that
+  `AddBleHubServer` / `AddBleHubClient` register the platform BLE stacks (`AddBluetoothLeHosting()` / `AddBluetoothLE()`)
+  for the app. Keep platform code to those `#if` registration blocks; everything else uses only the Shiny BLE
+  abstractions and is the same on every target. On plain `net10.0` the app registers the BLE managers itself. CI needs
+  the `maui-ios`, `maui-android` and `maui-maccatalyst` workloads.
+- **Registration is one call per side.** Hosts use `AddBleHubServer(server => ...)` (once, at least one hub) and
+  clients `AddBleHubClient<T>(characteristic, o => ...)`. Don't add separate `Configure*` service-collection methods:
+  new host settings go on the builder or `BleHubHostOptions`, new client settings on `BleHubClientOptions`.
+  Registration mistakes (duplicate hub or characteristic, malformed UUID) throw at registration.
+- **Hubs are foreground only.** Don't add background BLE: no auto-connect, no state restoration. The Apple client
+  registration turns off iOS's background alerts (`NotifyOn*` on `AppleBleConfiguration`).
 - **The wire protocol is versioned** (`FrameCodec.ProtocolVersion`, `FrameKind` values). Never renumber a
   `FrameKind`. A breaking wire change bumps the protocol version, and the handshake refuses mismatches. Hub
   methods and events travel **by name**, so renaming one is a breaking change for deployed clients.
@@ -77,10 +86,13 @@ Release notes live in `blehubs/release-notes.mdx` on the docs site:
   - Client pushes are raised one at a time, in the order received (through a channel).
   - A client is registered, and `OnConnectedAsync` has run, **before** the handshake ack goes out.
   - `Context.Abort()` inside a hub method takes effect after that method's reply is sent.
-- **Per-hub start/stop.**
-  - A GATT service holds every hub sharing its UUID. Stopped hubs stay in it but refuse handshakes.
-  - A service is removed only when its last running hub stops.
-  - Advertising lists exactly the services that have a running hub.
+- **One service UUID, per-hub start/stop.**
+  - Every hub is a characteristic in one GATT service (`BleHubHostOptions.ServiceUuid`, set with `server.ServiceUuid`;
+    clients match it with `BleHubClientOptions.ServiceUuid`). Never bring back per-hub
+    service UUIDs: two 128-bit UUIDs overflow the 31 byte advertisement.
+  - Stopped hubs stay in the service but refuse handshakes. The service is removed only when the last running hub stops.
+  - The advertisement carries that one UUID while any hub runs. Hubs starting or stopping beside each other don't touch
+    it; only `Rename` restarts it.
 
 ### Source generator
 

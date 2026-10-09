@@ -3,10 +3,10 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Shiny.BluetoothLE.Hubs;
 
-public static class BleHubServiceCollectionExtensions
+internal static class BleHubServiceCollectionExtensions
 {
     /// <summary>
-    /// Adjusts protocol limits (payload size, timeouts). Optional - defaults apply otherwise.
+    /// Adjusts the app-wide protocol limits - AddBleHubServer's Protocol and AddBleHubClient's options call it
     /// </summary>
     public static IServiceCollection ConfigureBleHubProtocol(this IServiceCollection services, Action<BleHubProtocolOptions> configure)
     {
@@ -17,7 +17,7 @@ public static class BleHubServiceCollectionExtensions
 
 
     /// <summary>
-    /// Registers the shared protocol services. Called by AddBleHub / AddBleHubClient.
+    /// Registers the shared protocol services. Called by AddBleHubServer / AddBleHubClient.
     /// </summary>
     public static IServiceCollection AddBleHubCore(this IServiceCollection services)
     {

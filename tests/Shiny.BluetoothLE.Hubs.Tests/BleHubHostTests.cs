@@ -7,8 +7,7 @@ namespace Shiny.BluetoothLE.Hubs.Tests;
 /// </summary>
 public class BleHubHostTests : IAsyncLifetime
 {
-    const string ServiceA = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
-    const string ServiceB = "7e400001-b5a3-f393-e0a9-e50e24dcca9e";
+    const string ServiceA = BleHubProtocolOptions.DefaultServiceUuid;
     const string TestChar = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
     const string SecondChar = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 
@@ -17,6 +16,7 @@ public class BleHubHostTests : IAsyncLifetime
     readonly FakeHostingManager hosting = new();
     readonly BleHubProtocolOptions options = new() { RequestTimeout = TimeSpan.FromSeconds(5) };
     readonly IBleHubSerializer serializer = new ShinyJsonBleHubSerializer();
+    string serviceUuid = ServiceA;
     ServiceProvider services = null!;
     BleHubHost host = null!;
     IHubContext<TestHub> testHub = null!;
@@ -27,7 +27,7 @@ public class BleHubHostTests : IAsyncLifetime
     public async ValueTask DisposeAsync() => await this.services.DisposeAsync();
 
 
-    void Build(string secondService, TimeSpan? sweepInterval = null)
+    void Build(TimeSpan? sweepInterval = null)
     {
         this.services = new ServiceCollection()
             .AddSingleton<HubLog>()
@@ -38,10 +38,10 @@ public class BleHubHostTests : IAsyncLifetime
         this.host = new BleHubHost(
             this.hosting,
             [
-                new BleHubRegistration(typeof(TestHub), ServiceA, TestChar, new BleHubOptions()),
-                new BleHubRegistration(typeof(SecondHub), secondService, SecondChar, new BleHubOptions())
+                new BleHubRegistration(typeof(TestHub), TestChar, new BleHubOptions()),
+                new BleHubRegistration(typeof(SecondHub), SecondChar, new BleHubOptions())
             ],
-            new BleHubHostOptions { LocalName = "Host", ClientSweepInterval = sweepInterval ?? TimeSpan.FromMinutes(5) },
+            new BleHubHostOptions { ServiceUuid = this.serviceUuid, LocalName = "Host", ClientSweepInterval = sweepInterval ?? TimeSpan.FromMinutes(5) },
             this.options,
             this.serializer,
             this.services
@@ -54,9 +54,9 @@ public class BleHubHostTests : IAsyncLifetime
     /// <summary>
     /// A client proxy wired to the fake GATT server like a real central would be
     /// </summary>
-    async Task<TContract> Connect<TContract>(string characteristicUuid, string serviceUuid, string centralId) where TContract : class
+    async Task<TContract> Connect<TContract>(string characteristicUuid, string centralId) where TContract : class
     {
-        var client = BleHubClientFactories.Create<TContract>(new BleHubClientServices(this.options, this.serializer), serviceUuid, characteristicUuid);
+        var client = BleHubClientFactories.Create<TContract>(new BleHubClientServices(this.options, this.serializer), this.serviceUuid, characteristicUuid);
         var central = new FakeCentral(centralId);
         var ch = this.hosting.Characteristic(characteristicUuid);
 
@@ -85,7 +85,7 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task StartRunsEveryHubInOneSharedService()
     {
-        this.Build(ServiceA);
+        this.Build();
         await this.host.Start();
 
         Assert.True(this.host.IsRunning);
@@ -95,8 +95,8 @@ public class BleHubHostTests : IAsyncLifetime
         Assert.Equal([ServiceA], this.hosting.AdvertisedServices);
         Assert.Equal("Host", this.hosting.AdvertisedName);
 
-        var test = await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
-        var second = await this.Connect<ISecondHub>(SecondChar, ServiceA, "c2");
+        var test = await this.Connect<ITestHub>(TestChar, "c1");
+        var second = await this.Connect<ISecondHub>(SecondChar, "c2");
         Assert.Equal(new Payload("x", 1), await test.Echo(new Payload("x", 1)));
         Assert.Equal("pong", await second.Ping());
     }
@@ -105,7 +105,7 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task StartingOneHubLeavesTheOtherRefusingClients()
     {
-        this.Build(ServiceA);
+        this.Build();
         await this.testHub.Start();
 
         Assert.True(this.testHub.IsRunning);
@@ -113,8 +113,8 @@ public class BleHubHostTests : IAsyncLifetime
         Assert.True(this.host.IsRunning);
 
         // the shared service holds both characteristics, but only the running hub accepts clients
-        await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
-        var ex = await Assert.ThrowsAsync<BleHubException>(() => this.Connect<ISecondHub>(SecondChar, ServiceA, "c2"));
+        await this.Connect<ITestHub>(TestChar, "c1");
+        var ex = await Assert.ThrowsAsync<BleHubException>(() => this.Connect<ISecondHub>(SecondChar, "c2"));
         Assert.Contains("Hub is not running", ex.Message);
     }
 
@@ -122,11 +122,11 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task StoppingOneHubKeepsASharedServiceForTheOther()
     {
-        this.Build(ServiceA);
+        this.Build();
         await this.host.Start();
 
-        var test = await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
-        var second = await this.Connect<ISecondHub>(SecondChar, ServiceA, "c2");
+        var test = await this.Connect<ITestHub>(TestChar, "c1");
+        var second = await this.Connect<ISecondHub>(SecondChar, "c2");
         HubDisconnect? kicked = null;
         ((IBleHubConnection)test).Disconnected += (_, d) => kicked = d;
 
@@ -145,7 +145,7 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task StoppingTheLastHubTearsEverythingDown()
     {
-        this.Build(ServiceA);
+        this.Build();
         await this.host.Start();
 
         await this.testHub.Stop();
@@ -158,33 +158,53 @@ public class BleHubHostTests : IAsyncLifetime
 
 
     [Fact]
-    public async Task HubsOnSeparateServicesAreAddedAndRemovedIndependently()
+    public async Task StartingAndStoppingOneHubBesideAnotherChangesNothingOnAir()
     {
-        this.Build(ServiceB);
-        await this.host.Start();
-        Assert.Equal(2, this.hosting.AdvertisedServices.Length);
-
-        await this.secondHub.Stop();
-
-        Assert.False(this.hosting.HasService(ServiceB));
-        Assert.True(this.hosting.HasService(ServiceA));
-        Assert.Equal([ServiceA], this.hosting.AdvertisedServices);
-
+        this.Build();
+        await this.testHub.Start();
         await this.secondHub.Start();
-        Assert.True(this.hosting.HasService(ServiceB));
-        Assert.Equal(2, this.hosting.AdvertisedServices.Length);
+        await this.secondHub.Stop();
+        await this.secondHub.Start();
+
+        // one service, one advertised UUID, advertised once - however hubs come and go beside each other
+        Assert.Equal([ServiceA], this.hosting.AdvertisedServices);
+        Assert.Equal(1, this.hosting.Log.Count(x => x.StartsWith("advertise:")));
+        Assert.Equal(1, this.hosting.Log.Count(x => x.StartsWith("add-service:")));
+        Assert.DoesNotContain($"remove-service:{ServiceA}", this.hosting.Log);
+    }
+
+
+    [Fact]
+    public async Task TheServiceUuidComesFromTheHostOptions()
+    {
+        const string custom = "11111111-2222-3333-4444-555555555555";
+        this.serviceUuid = custom.ToUpperInvariant();
+        this.Build();
+        await this.host.Start();
+
+        Assert.True(this.hosting.HasService(custom));
+        Assert.Equal([custom], this.hosting.AdvertisedServices);
+        await this.Connect<ITestHub>(TestChar, "c1");
+    }
+
+
+    [Fact]
+    public void AnInvalidServiceUuidIsRefused()
+    {
+        this.serviceUuid = "180D";
+        Assert.Throws<ArgumentException>(() => this.Build());
     }
 
 
     [Fact]
     public async Task HubCanBeRestarted()
     {
-        this.Build(ServiceA);
+        this.Build();
         await this.testHub.Start();
         await this.testHub.Stop();
         await this.testHub.Start();
 
-        var test = await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        var test = await this.Connect<ITestHub>(TestChar, "c1");
         Assert.Equal("a1b2", await test.Concat("a", 1, new Payload("b", 2)));
     }
 
@@ -192,9 +212,9 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task ClientDisconnectSaysGoodbyeBeforeUnsubscribing()
     {
-        this.Build(ServiceA);
+        this.Build();
         await this.host.Start();
-        var test = await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        var test = await this.Connect<ITestHub>(TestChar, "c1");
         BleHubClientDisconnectedEventArgs? left = null;
         this.testHub.ClientDisconnected += (_, e) => left = e;
 
@@ -210,9 +230,9 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task ConnectedClientsCarryTheirCentral()
     {
-        this.Build(ServiceA);
+        this.Build();
         await this.host.Start();
-        await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        await this.Connect<ITestHub>(TestChar, "c1");
 
         var client = Assert.Single(this.testHub.ConnectedClients);
         Assert.Equal("c1", client.Peripheral?.Uuid);
@@ -226,9 +246,9 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task UnsubscribeWithoutGoodbyeIsATimeout()
     {
-        this.Build(ServiceA);
+        this.Build();
         await this.host.Start();
-        await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        await this.Connect<ITestHub>(TestChar, "c1");
         BleHubClientDisconnectedEventArgs? left = null;
         this.testHub.ClientDisconnected += (_, e) => left = e;
 
@@ -242,9 +262,9 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task SweptClientIsATimeout()
     {
-        this.Build(ServiceA, TimeSpan.FromMilliseconds(50));
+        this.Build(TimeSpan.FromMilliseconds(50));
         await this.host.Start();
-        await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        await this.Connect<ITestHub>(TestChar, "c1");
         BleHubClientDisconnectedEventArgs? left = null;
         this.testHub.ClientDisconnected += (_, e) => left = e;
 
@@ -259,9 +279,9 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task HostStopStopsEveryHub()
     {
-        this.Build(ServiceA);
+        this.Build();
         await this.host.Start();
-        var test = await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        var test = await this.Connect<ITestHub>(TestChar, "c1");
         HubDisconnect? disconnected = null;
         ((IBleHubConnection)test).Disconnected += (_, d) => disconnected = d;
 
@@ -278,7 +298,7 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task SweepLeavesClientsOnOtherTransportsAlone()
     {
-        this.Build(ServiceA, TimeSpan.FromMilliseconds(50));
+        this.Build(TimeSpan.FromMilliseconds(50));
         await this.testHub.Start();
 
         var channel = new RecordingChannel();
@@ -298,9 +318,9 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task RenameReadvertisesAndTellsClientsWithoutStopping()
     {
-        this.Build(ServiceA);
+        this.Build();
         await this.host.Start();
-        var test = (BleHubClient)(object)await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        var test = (BleHubClient)(object)await this.Connect<ITestHub>(TestChar, "c1");
         var channel = new RecordingChannel();
         await this.testHub.TransportEndpoint.Connect("wifi-1", new Protocol.HandshakeInfo(1, "WiFi", null, null), channel, CancellationToken.None);
 
@@ -319,13 +339,13 @@ public class BleHubHostTests : IAsyncLifetime
     [Fact]
     public async Task RenameWhileStoppedIsUsedOnTheNextStart()
     {
-        this.Build(ServiceA);
+        this.Build();
         await this.host.Rename("Later");
         Assert.False(this.hosting.IsAdvertising);
 
         await this.host.Start();
         Assert.Equal("Later", this.hosting.AdvertisedName);
-        var test = (BleHubClient)(object)await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        var test = (BleHubClient)(object)await this.Connect<ITestHub>(TestChar, "c1");
         Assert.Equal("Later", test.HostName);
     }
 

@@ -10,7 +10,6 @@ namespace Shiny.BluetoothLE.Hubs.Tests;
 /// </summary>
 public class ExternalTransportTests : IAsyncLifetime
 {
-    const string ServiceUuid = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
     const string CharacteristicUuid = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
 
     static ExternalTransportTests() => Json.AddContext(TestJsonContext.Default);
@@ -33,7 +32,7 @@ public class ExternalTransportTests : IAsyncLifetime
         this.log = this.services.GetRequiredService<HubLog>();
 
         this.runtime = new HubRuntime(
-            new BleHubRegistration(typeof(TestHub), ServiceUuid, CharacteristicUuid, this.hubOptions),
+            new BleHubRegistration(typeof(TestHub), CharacteristicUuid, this.hubOptions),
             BleHubDispatchers.Get(typeof(TestHub)),
             this.services,
             this.options,
@@ -56,7 +55,7 @@ public class ExternalTransportTests : IAsyncLifetime
     public async ValueTask DisposeAsync() => await this.services.DisposeAsync();
 
 
-    BleHubClient CreateClient() => BleHubClientFactories.Create<ITestHub>(new BleHubClientServices(this.options, this.serializer), ServiceUuid, CharacteristicUuid);
+    BleHubClient CreateClient() => BleHubClientFactories.Create<ITestHub>(new BleHubClientServices(this.options, this.serializer), BleHubProtocolOptions.DefaultServiceUuid, CharacteristicUuid);
 
 
     async Task<(ITestHub Hub, BleHubClient Client, MemoryTransport Transport)> Connect(string id = "wifi-1", string name = "Alice")

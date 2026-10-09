@@ -9,15 +9,16 @@ public sealed class BleHubClientAttribute : Attribute
     public string? ProxyName { get; set; }      // default: interface name without leading I + "Client"
 }
 
-public class BleHubProtocolOptions                     // services.ConfigureBleHubProtocol(o => ...)
+public class BleHubProtocolOptions                     // app-wide: server.Protocol(o => ...) or AddBleHubClient(..., o => o.Protocol(p => ...))
 {
+    public const string DefaultServiceUuid = "98ac0390-867f-4c0d-b9f5-4266bdeac29b";   // host's and clients' ServiceUuid default
     public int MaxPayloadSize { get; set; }      // 256 KB
     public TimeSpan ReassemblyTimeout { get; set; }   // 30s
     public TimeSpan RequestTimeout { get; set; } // 30s - per hub call, streams excluded
     public int MaxPartialMessages { get; set; }  // 16 per peer
 }
 
-public interface IBleHubSerializer             // register your own before AddBleHub/AddBleHubClient to replace JSON
+public interface IBleHubSerializer             // register your own before AddBleHubServer/AddBleHubClient to replace JSON
 {
     byte[] Serialize<T>(T value);
     T Deserialize<T>(ReadOnlySpan<byte> data);
@@ -54,8 +55,16 @@ public class BleHubFileTransferNotSupportedException : BleHubException;
 ## Host (`Shiny.BluetoothLE.Hubs.Host`)
 
 ```csharp
-IServiceCollection AddBleHub<THub>(string serviceUuid, string characteristicUuid, Action<BleHubOptions>? configure = null);
-IServiceCollection ConfigureBleHubHost(Action<BleHubHostOptions> configure);
+// once per app, at least one hub; adds AddBluetoothLeHosting() on Android/iOS/Mac Catalyst
+IServiceCollection AddBleHubServer(Action<BleHubServerBuilder> configure);
+
+public sealed class BleHubServerBuilder
+{
+    BleHubServerBuilder ServiceUuid(string serviceUuid);                      // sets BleHubHostOptions.ServiceUuid
+    BleHubServerBuilder Host(Action<BleHubHostOptions> configure);
+    BleHubServerBuilder Protocol(Action<BleHubProtocolOptions> configure);   // app-wide
+    BleHubServerBuilder AddHub<THub>(string characteristicUuid, Action<BleHubOptions>? configure = null);   // throws on a duplicate hub/characteristic or bad UUID
+}
 
 public class BleHubOptions
 {
@@ -65,6 +74,7 @@ public class BleHubOptions
 
 public class BleHubHostOptions
 {
+    public string ServiceUuid { get; set; }                      // BleHubProtocolOptions.DefaultServiceUuid - the one service holding every hub; advertised
     public string? LocalName { get; set; }
     public TimeSpan ClientSweepInterval { get; set; }            // 10s
     public BleHubHostOptions EnableFileTransfers(string rootDirectory, Action<BleHubFileTransferOptions>? configure = null);
@@ -181,8 +191,15 @@ public static Task StateChanged(this BleHubPush<IGameHub> push, GameState gameSt
 ## Client (`Shiny.BluetoothLE.Hubs.Client`)
 
 ```csharp
-IServiceCollection AddBleHubClient<TContract>(string serviceUuid, string characteristicUuid);
+// once per contract; adds AddBluetoothLE() on Android/iOS/Mac Catalyst (Apple: background alerts off)
+IServiceCollection AddBleHubClient<TContract>(string characteristicUuid, Action<BleHubClientOptions>? configure = null);
 // resolves as IBleHubClient<TContract>, TContract and the generated proxy
+
+public sealed class BleHubClientOptions
+{
+    public string ServiceUuid { get; set; }                       // BleHubProtocolOptions.DefaultServiceUuid - must match the host's
+    public BleHubClientOptions Protocol(Action<BleHubProtocolOptions> configure);   // app-wide
+}
 
 public interface IBleHubConnection
 {
@@ -195,7 +212,7 @@ public interface IBleHubConnection
     event EventHandler? Connected;
     event EventHandler<HubDisconnect>? Disconnected;   // not raised for ConnectionFailed
     event EventHandler<string?>? HostRenamed;     // HostName already updated; in order with hub events
-    IObservable<BleHubHostInfo> Discover();       // scan by the hub's service UUID; dispose to stop
+    IObservable<BleHubHostInfo> Discover();       // scan by BleHubClientOptions.ServiceUuid; dispose to stop
     Task Connect(BleHubHostInfo host, BleHubConnectOptions? options = null, CancellationToken cancellationToken = default);
     Task Disconnect();
     Task Rename(string? name, CancellationToken cancellationToken = default);   // no-op if unchanged; refusal = BleHubRemoteException (RenameRefused)
@@ -220,7 +237,7 @@ public sealed record BleHubConnectOptions(string? Name = null, string? AppVersio
 ## Other transports (hidden seams)
 
 `[EditorBrowsable(Never)]` - for transport packages, not app code. To serve hubs over Wi-Fi as well, use
-**Shiny.SwitchboardR** (`AddSwitchboardR().AddHub<THub>()` on the host, `AddSwitchboardRClient<TContract>()` on the client)
+**Shiny.UniversalHubs** (`AddUniversalServer(server => server.AddHub<THub>(...))` on the host, `AddUniversalHubClient<TContract>(...)` on the client)
 rather than these directly.
 
 - `IHubContext<THub>.TransportEndpoint` → `IBleHubTransportEndpoint`: `Connect(connectionId, HandshakeInfo, IBleHubPeerChannel, ct)`

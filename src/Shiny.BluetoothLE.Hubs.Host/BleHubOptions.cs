@@ -26,8 +26,14 @@ public class BleHubOptions
 public class BleHubHostOptions
 {
     /// <summary>
-    /// Advertised local name, also sent to clients in the handshake. Keep it short - a 128-bit service UUID leaves little room
-    /// in a 31 byte advertisement. Null to advertise without a name.
+    /// The one GATT service every hub lives in - each hub is a characteristic inside it. It is the only UUID the host
+    /// advertises, and the one its clients scan for (their own ServiceUuid must match).
+    /// </summary>
+    public string ServiceUuid { get; set; } = BleHubProtocolOptions.DefaultServiceUuid;
+
+    /// <summary>
+    /// Advertised local name, also sent to clients in the handshake. Keep it short - the 128-bit service UUID leaves little
+    /// room in a 31 byte advertisement. Null to advertise without a name.
     /// </summary>
     public string? LocalName { get; set; }
 
@@ -113,4 +119,4 @@ public sealed record BleHubFileProgressEventArgs(
 );
 
 
-public sealed record BleHubRegistration(Type HubType, string ServiceUuid, string CharacteristicUuid, BleHubOptions Options);
+public sealed record BleHubRegistration(Type HubType, string CharacteristicUuid, BleHubOptions Options);

@@ -8,7 +8,6 @@ namespace Shiny.BluetoothLE.Hubs.Tests;
 /// </summary>
 public class HubTests : IAsyncLifetime
 {
-    const string ServiceUuid = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
     const string CharacteristicUuid = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
 
     static HubTests() => Json.AddContext(TestJsonContext.Default);
@@ -32,7 +31,7 @@ public class HubTests : IAsyncLifetime
         this.log = this.services.GetRequiredService<HubLog>();
 
         this.runtime = new HubRuntime(
-            new BleHubRegistration(typeof(TestHub), ServiceUuid, CharacteristicUuid, this.hubOptions),
+            new BleHubRegistration(typeof(TestHub), CharacteristicUuid, this.hubOptions),
             BleHubDispatchers.Get(typeof(TestHub)),
             this.services,
             this.options,
@@ -58,7 +57,7 @@ public class HubTests : IAsyncLifetime
 
     ITestHub CreateProxy(string peerId)
     {
-        var client = BleHubClientFactories.Create<ITestHub>(new BleHubClientServices(this.options, this.serializer), ServiceUuid, CharacteristicUuid);
+        var client = BleHubClientFactories.Create<ITestHub>(new BleHubClientServices(this.options, this.serializer), BleHubProtocolOptions.DefaultServiceUuid, CharacteristicUuid);
         this.clients[peerId] = client;
         return (ITestHub)client;
     }

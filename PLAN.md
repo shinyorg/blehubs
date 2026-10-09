@@ -35,8 +35,10 @@ public interface IGameHub
 
 ### Host
 ```csharp
-services.AddBleHub<GameHub>("<service uuid>", "<characteristic uuid>");
-services.ConfigureBleHubHost(o => { o.LocalName = "TTT"; o.EnableFileTransfers(dir); });
+services.AddBleHubServer(server => server
+    .ServiceUuid("<service uuid>")                                   // optional - a default applies; clients must match
+    .Host(o => { o.LocalName = "TTT"; o.EnableFileTransfers(dir); })
+    .AddHub<GameHub>("<characteristic uuid>"));
 
 public class GameHub(GameEngine engine) : BleHub<IGameHub>
 {
@@ -59,12 +61,12 @@ public class Something(IHubContext<GameHub> hub)
     Task Tick() => hub.Clients.All.StateChanged(state);       // generated extension property
 }
 
-await host.Start();   // IBleHubHost - adds every hub's GATT service, L2CAP and advertising
+await host.Start();   // IBleHubHost - adds the GATT service, L2CAP and advertising
 ```
 
 ### Client
 ```csharp
-services.AddBleHubClient<IGameHub>("<service uuid>", "<characteristic uuid>");
+services.AddBleHubClient<IGameHub>("<characteristic uuid>", o => o.ServiceUuid = "<service uuid>");
 
 public class GameViewModel(IBleHubClient<IGameHub> client)  // or the generated GameHubClient, or IGameHub
 {
@@ -82,8 +84,9 @@ public class GameViewModel(IBleHubClient<IGameHub> client)  // or the generated 
 ## 2. GATT layout
 
 - **One characteristic per hub**, with **Write** (client → host) and **Notify** (host → client) on the same characteristic.
-- Hubs may share a service UUID, in which case they become separate characteristics in one GATT service, or use their own. Hubs are routed by characteristic UUID, so frames never need to carry a hub name.
-- The host advertises every hub's service UUID. A client scans for the service UUID of the hub it wants.
+- **One service per host**: every hub is a characteristic inside one GATT service: `BleHubHostOptions.ServiceUuid` on the host (`server.ServiceUuid(...)`) and `BleHubClientOptions.ServiceUuid` on each client, both defaulting to `BleHubProtocolOptions.DefaultServiceUuid`. Hosts and clients must agree on it. Hubs are routed by characteristic UUID, so frames never need to carry a hub name.
+- The host advertises that one UUID, and clients scan for it. Two 128-bit UUIDs (37 bytes) don't fit a 31 byte advertisement: Android refuses to advertise (`ADVERTISE_FAILED_DATA_TOO_LARGE`), and iOS moves the extra UUID to an Apple-only overflow area that Android scanners can't see. So per-hub service UUIDs were removed (2026-10-09).
+- A scan therefore can't tell which hubs a host is running. Connecting to a hub that is stopped is refused by the handshake, and to a host without the hub's characteristic (another app on the default UUID) fails at characteristic discovery.
 - Several hub clients connected to the same peripheral share one BLE connection, which is reference counted. Disconnecting one hub doesn't drop the others.
 
 ### Why notifications instead of reads for responses
@@ -186,20 +189,20 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
 
 ## 5. Host (`Shiny.BluetoothLE.Hubs.Host`)
 
-- **`AddBleHub<THub>(serviceUuid, characteristicUuid)`**:
-  - registers the hub as transient, created in a new DI scope for each invocation (like SignalR)
-  - registers `IHubContext<THub>`
-  - registers the shared `IBleHubHost`
+- **`AddBleHubServer(server => ...)`**, called once with at least one hub:
+  - `.ServiceUuid(uuid)` sets `BleHubHostOptions.ServiceUuid`, `.Host(...)` the rest of `BleHubHostOptions`, and `.Protocol(...)` the app-wide `BleHubProtocolOptions`.
+  - `.AddHub<THub>(characteristicUuid, o => ...)` registers the hub as transient (a new DI scope for each invocation, like SignalR) and `IHubContext<THub>`. A hub type or characteristic added twice, and a malformed UUID, are refused at registration.
+  - registers the shared `IBleHubHost`, and on Android, iOS and Mac Catalyst the platform hosting stack (`AddBluetoothLeHosting()`).
 - **`IBleHubHost`**:
   - `Start()` / `Stop(reason)` start or stop **every** hub.
   - `IsRunning` is true while any hub runs.
   - `Rename(localName)` changes the host's name without stopping anything. It sets `BleHubHostOptions.LocalName`,
-    restarts advertising under the new name while hubs run (even though the service UUIDs didn't change), and sends
+    restarts advertising under the new name while hubs run (even though the service UUID didn't change), and sends
     `HostRenamed` to every connected client on every transport. While stopped it only sets the name for the next `Start`.
 - **Per-hub start/stop**: `IHubContext<THub>.Start()` / `Stop(reason)` / `IsRunning`.
   - A stopped hub tells its clients to disconnect and refuses new handshakes ("Hub is not running").
-  - A GATT service holds every hub that shares its UUID. It is added when the first of those hubs starts and removed only when the last one stops, so stopping one hub never drops another hub's clients.
-  - Advertising always lists exactly the services that have a running hub.
+  - The one GATT service holds every registered hub's characteristic. It is added when the first hub starts and removed only when the last one stops, so stopping one hub never drops another hub's clients.
+  - Advertising (the one service UUID) starts with the first running hub and stops with the last. Starting or stopping a hub beside another changes nothing on air; only `Rename` restarts it.
   - BLE access, the L2CAP file server and the cleanup sweep start with the first running hub and stop with the last.
   - Also: `IsRunning`, `FileTransferPsm`, `FileTransferred` / `FileTransferProgress` events.
 - **`BleHub<TContract>`**:
@@ -222,15 +225,16 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
   - `ServerDisconnect`: `Context.Abort(reason)` or `IHubContext.Disconnect(id, reason)`.
   - `ServerShutdown`: `IBleHubHost.Stop(reason)`, or `IHubContext.Stop(reason)` (default message "Hub stopped").
   - `ClientDisconnected` raises `BleHubClientDisconnectedEventArgs(Client, Disconnect)`. Its `Reason` string is `Disconnect.Description`.
-- **Client options**: `MaxClients` and `ValidateClient` (return a rejection reason) are set per hub through `AddBleHub(..., o => ...)`.
+- **Client options**: `MaxClients` and `ValidateClient` (return a rejection reason) are set per hub through `server.AddHub<THub>(..., o => ...)`.
 - **Cleanup**: a peer that unsubscribes is removed right away. A periodic sweep also removes peers that no longer appear in `SubscribedCentrals`, because Android doesn't always report the unsubscribe.
 
 ## 6. Client (`Shiny.BluetoothLE.Hubs.Client`)
 
+- **`AddBleHubClient<TContract>(characteristicUuid, o => ...)`** registers the generated proxy. `BleHubClientOptions.ServiceUuid` (default `DefaultServiceUuid`) must match the host's, and `o.Protocol(...)` sets the app-wide limits. On Android, iOS and Mac Catalyst it registers the platform BLE stack (`AddBluetoothLE()`); on Apple with an `AppleBleConfiguration` that turns off iOS's background alerts (`NotifyOnConnection` / `NotifyOnDisconnection` / `NotifyOnNotification`), since hubs are foreground only. An app's own `AddBluetoothLE(config)`, called first, wins.
 - **`BleHubClient`** is the base class for the generated proxies. `IBleHubClient<TContract>` exposes:
   - `Hub`
   - `Status`, plus the `StatusChanged`, `Connected` and `Disconnected` events
-  - `Discover()`: scans by the hub's service UUID
+  - `Discover()`: scans by the client's `ServiceUuid`, so it finds every host of this library (on that UUID), whichever hubs it runs
   - `Connect(host, options, ct)`:
     1. Connect.
     2. Request MTU 512.
@@ -258,7 +262,7 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
 
 Files don't go through hub framing. They use a separate L2CAP channel, and the client exposes them as their own methods.
 
-- **Host**: `ConfigureBleHubHost(o => o.EnableFileTransfers(dir, ft => ...))`.
+- **Host**: `AddBleHubServer(server => server.Host(o => o.EnableFileTransfers(dir, ft => ...)))`.
   - **Directory mode**, the default, wraps `OpenL2CapFileServer`: upload and download flags, `MaxUploadSize`, overwrite rules and an `Authorize` hook. Shiny refuses path traversal.
   - **Custom mode** registers `IBleHubFileHandler`, which wraps `HandleL2CapRequests`.
 - **PSM discovery**: the platform assigns the PSM at runtime, and it reaches the client in every hub's `HandshakeAck` together with the secure flag. On Android the secure and insecure channels listen separately, so the client must open the matching one. A PSM of 0 means file transfer is unavailable, and the file calls throw `BleHubFileTransferNotSupportedException`.
@@ -279,7 +283,7 @@ tests/Shiny.BluetoothLE.Hubs.Tests/            xUnit: framing, codec, generated 
 samples/TicTacToe/                     .NET MAUI (iOS + Android), Shiny.Maui.Shell
 ```
 
-The libraries target `net10.0` and reference only the Shiny abstractions. The app registers the platform stacks with `AddBluetoothLE()` / `AddBluetoothLeHosting()`.
+The core package targets `net10.0`. The host and client packages target `net10.0`, `-android`, `-ios` and `-maccatalyst` (`PlatformTargetFrameworks` in Directory.Build.props) only so that `AddBleHubServer` / `AddBleHubClient` can register the platform BLE stacks (`AddBluetoothLeHosting()` / `AddBluetoothLE()`). The code is otherwise the same on every target and uses only the Shiny abstractions; on plain `net10.0` the app registers an `IBleHostingManager` / `IBleManager` itself.
 
 ## 8. Tic-tac-toe sample
 
@@ -309,7 +313,9 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
 | Host → client | Fire-and-forget pushes. No client results in v1 |
 | v1 hub features | Groups, streaming (`IAsyncEnumerable<T>`), `OnConnected` / `OnDisconnected`, `Context.Abort`, multiple hubs |
 | GATT | One write+notify characteristic per hub, routed by characteristic UUID |
+| Service UUID (2026-10-09) | One per host (`server.ServiceUuid`, matched by each client's `ServiceUuid`), holding every hub. Per-hub service UUIDs were removed because two 128-bit UUIDs overflow the advertisement (Android fails, iOS hides one from Android). The cost: a scan can't tell which hubs a host runs, so a stopped hub is refused at the handshake |
 | Platforms | iOS + Android in both roles. Windows can't host |
+| Registration (2026-10-09) | One `AddBleHubServer(server => ...)` call per app for the host side, `AddBleHubClient<T>(characteristic, o => ...)` per contract. Both register the platform BLE stacks, so the host and client packages multi-target. Replaces `AddBleHub`, `ConfigureBleHubHost` and `ConfigureBleHubProtocol` |
 | Payload size | Hub messages are chunked over GATT, 256 KB max by default. Files go over L2CAP |
 | Serialization | Pluggable `IBleHubSerializer`. The default is Shiny's AOT JSON, using contexts registered with `Json.AddContext` |
 | Background | Foreground only |
@@ -317,7 +323,7 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
 | Disconnect reasons | Typed `HubDisconnectReason` + optional message, on both sides (2026-10-08). The client says goodbye with a `Disconnect` frame so the host can tell leaving from a dropped link. Additive JSON, protocol version stays 1 |
 | Renaming (2026-10-09) | Clients and the host rename without reconnecting, through additive `Rename` / `HostRenamed` frames. The protocol version stays 1, because older peers refuse or ignore the frames cleanly |
 | Telling other clients about a rename | App logic in the hub (`OnRenamedAsync` pushes to `Clients.Others`). The library gives the hook and `ClientRenamed`, and pushes nothing itself |
-| Other transports (§13) | Hidden host and client seams in this repo. Wi-Fi itself (Switchboard, mDNS, transport choice) lives in Shiny.SwitchboardR, its own repo, which references this one through NuGet |
+| Other transports (§13) | Hidden host and client seams in this repo. Wi-Fi itself (Switchboard, mDNS, transport choice) lives in Shiny.UniversalHubs, its own repo, which references this one through NuGet |
 
 ## 10. Status
 
@@ -334,6 +340,14 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
   - **Not yet verified:** that a real iOS and Android host each see the goodbye before the unsubscribe.
 - **2026-10-09**: renaming without reconnecting. New frames `Rename` (0x14) and `HostRenamed` (0x31), additive, so the protocol stays at 1. Client: `Rename`, `ClientName`, `HostRenamed`. Host: `OnRenamedAsync`, `IHubContext.ClientRenamed`, `IBleHubHost.Rename` (re-advertises without stopping). Transport seams gained rename members (§13). 94 tests pass.
   - **Not yet verified:** that a real client's scan shows the host's new advertised name.
+- **2026-10-09**: one service UUID per host. `BleHubProtocolOptions.ServiceUuid` (default `DefaultServiceUuid`) holds every hub as a characteristic and is the only advertised UUID. **Breaking API**: `AddBleHub<THub>(characteristicUuid)`, `AddBleHubClient<T>(characteristicUuid)` and `BleHubRegistration(HubType, CharacteristicUuid, Options)` lost their service UUID. Found on devices: a host running two hubs on separate services couldn't be seen (iOS) or couldn't advertise at all (Android). The wire is unchanged. 97 tests pass.
+  - **Not yet verified:** that an iOS and an Android host running two hubs are each seen by the other platform.
+- **2026-10-09**: registration cleanup, matching Shiny.UniversalHubs. **Breaking API**:
+  - Host: `AddBleHubServer(server => server.ServiceUuid(..).Host(..).Protocol(..).AddHub<THub>(characteristic, ..))`, called once. It refuses duplicate hubs and characteristics and malformed UUIDs. The host's service UUID moved to `BleHubHostOptions.ServiceUuid`.
+  - Client: `AddBleHubClient<T>(characteristic, o => ...)` with `BleHubClientOptions` (`ServiceUuid`, `Protocol(...)`).
+  - Removed: `AddBleHub`, `ConfigureBleHubHost`, `BleHubProtocolOptions.ServiceUuid`. `ConfigureBleHubProtocol` and `AddBleHubCore` are internal.
+  - The host and client packages multi-target and register the platform BLE stacks. On Apple the client turns off iOS's background alerts.
+  - 103 tests pass (new `RegistrationTests`).
 
 ## 11. Future
 
@@ -356,7 +370,7 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
 
 Hidden seams let another package carry hubs over something other than BLE: `IHubContext<THub>.TransportEndpoint` on the
 host and `BleHubClient.ConnectExternal` on the client. Their design, and the Wi-Fi transport built on them, live in
-**Shiny.SwitchboardR**'s PLAN.md (`~/Desktop/dev/SwitchboardR`, §2).
+**Shiny.UniversalHubs**' PLAN.md (`~/Desktop/dev/universalhubs`, §2).
 
 The seams carry a `HubDisconnect`, so a transport reports why a client left:
 - host: `IBleHubPeerChannel.Disconnect(HubDisconnect, ct)`, and `IBleHubTransportEndpoint.Disconnected(connectionId, HubDisconnect)` /

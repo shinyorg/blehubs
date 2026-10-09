@@ -46,16 +46,23 @@ await client.UploadFile(path, "avatar.jpg");                      // L2CAP
 ```csharp
 Json.AddContext(MyJsonContext.Default);     // hub arguments/results are AOT-safe JSON by default
 
-// host
-services.AddBluetoothLeHosting();
-services.AddBleHub<GameHub>(ServiceUuid, CharacteristicUuid, o => o.MaxClients = 6);
-services.ConfigureBleHubHost(o => o.EnableFileTransfers(Path.Combine(FileSystem.AppDataDirectory, "files")));
+// host - one call registers every hub (and the platform BLE hosting stack)
+services.AddBleHubServer(server => server
+    .ServiceUuid(MyServiceUuid)                                                  // optional - a library default applies
+    .Host(o => o.EnableFileTransfers(Path.Combine(FileSystem.AppDataDirectory, "files")))
+    .AddHub<GameHub>(GameCharacteristicUuid, o => o.MaxClients = 6)
+    .AddHub<ChatHub>(ChatCharacteristicUuid));
 await serviceProvider.GetRequiredService<IBleHubHost>().Start();
 
-// client
-services.AddBluetoothLE();
-services.AddBleHubClient<IGameHub>(ServiceUuid, CharacteristicUuid);   // inject IBleHubClient<IGameHub>, GameHubClient or IGameHub
+// client - the same service UUID as the host (and the platform BLE stack)
+services.AddBleHubClient<IGameHub>(GameCharacteristicUuid, o => o.ServiceUuid = MyServiceUuid);   // inject IBleHubClient<IGameHub>, GameHubClient or IGameHub
 ```
+
+- **Registration**:
+  - `AddBleHubServer` is called once, with at least one hub. It refuses a hub added twice, two hubs on one characteristic, and malformed UUIDs. `.Host(...)` sets `BleHubHostOptions` (name, file transfers, sweep) and `.Protocol(...)` the protocol limits.
+  - `AddBleHubClient<T>(characteristicUuid, o => ...)` is called per contract. `BleHubClientOptions.ServiceUuid` must match the host's, and `o.Protocol(...)` sets the limits.
+  - Protocol limits (`BleHubProtocolOptions`: payload size, timeouts) are app-wide, shared by every host and client registration.
+  - **Platform BLE stacks are registered for you.** On Android, iOS and Mac Catalyst, `AddBleHubServer` calls `AddBluetoothLeHosting()` and `AddBleHubClient` calls `AddBluetoothLE()`. On Apple the client turns off iOS's background alerts (`NotifyOnConnection`, `NotifyOnDisconnection`, `NotifyOnNotification`), because hubs are used in the foreground. To use your own `AppleBleConfiguration`, call `AddBluetoothLE(config)` *before* `AddBleHubClient`: the first registration wins. On plain `net10.0` (Linux, tests), register an `IBleHostingManager` / `IBleManager` yourself.
 
 - **Contract**: hub methods return `Task`, `Task<T>` or `IAsyncEnumerable<T>`. A trailing `CancellationToken` is passed through to the host. Events are `Action` / `Action<T1..T4>`. Compile errors are reported as `SBH001`–`SBH006`.
 - **Hubs**: a new hub instance runs, in its own DI scope, for every call, like SignalR. The hub may take the contract's `CancellationToken` or leave it out.
@@ -89,9 +96,9 @@ services.AddBleHubClient<IGameHub>(ServiceUuid, CharacteristicUuid);   // inject
   client.HostRenamed += (_, name) => ...;                                            // client.HostName is already updated
   await client.Rename("Allan B");
   ```
-- **Multiple hubs**: each hub needs its own characteristic. Sharing one service UUID is recommended so the advertisement holds only one 128-bit UUID. Hub clients on the same device share one BLE connection.
+- **One service, a characteristic per hub**: every hub on a host is a characteristic inside one GATT service, set with `server.ServiceUuid(...)` (`BleHubHostOptions.ServiceUuid`). It is the only UUID the host advertises (two 128-bit UUIDs overflow the 31 byte advertisement) and the one clients scan for (`BleHubClientOptions.ServiceUuid`), so set it the same on both sides. Both default to `BleHubProtocolOptions.DefaultServiceUuid`, which is shared by every app using this library, so set your own to keep other apps' hosts out of your scans. A scan can't tell which hubs a host is running: joining a stopped hub is refused by the handshake. Hub clients on the same device share one BLE connection.
 
-- **Over Wi-Fi too**: [Shiny.SwitchboardR](https://github.com/shinyorg/switchboardr) serves the same hubs over Wi-Fi (with mDNS discovery) alongside BLE, and lets clients connect over whichever transport is available, with no change to hub or contract code. It builds on hidden transport seams in this library (`IHubContext<THub>.TransportEndpoint`, `BleHubClient.ConnectExternal`).
+- **Over Wi-Fi too**: [Shiny.UniversalHubs](https://github.com/shinyorg/universalhubs) serves the same hubs over Wi-Fi (with mDNS discovery) alongside BLE, and lets clients connect over whichever transport is available, with no change to hub or contract code. It builds on hidden transport seams in this library (`IHubContext<THub>.TransportEndpoint`, `BleHubClient.ConnectExternal`).
 
 See [PLAN.md](PLAN.md) for the wire protocol, the design decisions and the roadmap.
 

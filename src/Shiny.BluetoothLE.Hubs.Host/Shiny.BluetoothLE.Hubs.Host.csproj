@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFrameworks>$(PlatformTargetFrameworks)</TargetFrameworks>
         <IsAotCompatible>true</IsAotCompatible>
         <RootNamespace>Shiny.BluetoothLE.Hubs</RootNamespace>
         <Description>Shiny.BluetoothLE.Hubs host - SignalR style hubs served over a BLE GATT server, plus L2CAP file transfers</Description>

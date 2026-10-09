@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFrameworks>$(PlatformTargetFrameworks)</TargetFrameworks>
         <IsAotCompatible>true</IsAotCompatible>
         <RootNamespace>Shiny.BluetoothLE.Hubs</RootNamespace>
         <Description>Shiny.BluetoothLE.Hubs client - discovers BLE hub hosts and calls them through generated, strongly typed proxies</Description>

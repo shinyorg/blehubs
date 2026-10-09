@@ -39,11 +39,5 @@
                 </DataTemplate>
             </CollectionView.ItemTemplate>
         </CollectionView>
-
-        <Grid Grid.RowSpan="2"
-              IsVisible="{Binding IsConnecting}"
-              BackgroundColor="#80000000">
-            <ActivityIndicator IsRunning="{Binding IsConnecting}" Color="White" />
-        </Grid>
     </Grid>
 </ContentPage>

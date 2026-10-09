@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Shiny;
+using Shiny.BluetoothLE.Hubs;
 using TicTacToe.Game;
 using TicTacToe.Hub;
 using TicTacToe.Services;
@@ -15,29 +16,33 @@ namespace TicTacToe.Pages;
 [ShellMap<GamePage>("Game")]
 public partial class GameViewModel : ObservableObject,
     IPageLifecycleAware,
-    INavigationConfirmation,
-    IDisposable
+    INavigationConfirmation
 {
     readonly ShellServices shell;
     readonly GameSession session;
+    readonly PlayerSettings settings;
     CancellationTokenSource? emoteTimer;
     string? xAvatarFile;
     string? oAvatarFile;
+    bool started;
+    bool visible;
 
 
-    public GameViewModel(ShellServices shell, GameSession session)
+    public GameViewModel(ShellServices shell, GameSession session, PlayerSettings settings)
     {
         this.shell = shell;
         this.session = session;
+        this.settings = settings;
         for (var i = 0; i < 9; i++)
             this.Cells.Add(new CellViewModel(i));
-
-        this.session.Ended += this.OnSessionEnded;
-        this.session.StateChanged += this.OnStateChanged;
-        this.session.EmoteReceived += this.OnEmote;
-        this.session.ChatReceived += this.OnChat;
     }
 
+
+    /// <summary>
+    /// The game to join - null to host a new one
+    /// </summary>
+    [ShellProperty(required: false)]
+    public BleHubHostInfo? Join { get; set; }
 
     public ObservableCollection<CellViewModel> Cells { get; } = new();
     public bool IsHost => this.session.IsHost;
@@ -75,13 +80,79 @@ public partial class GameViewModel : ObservableObject,
         : this.UnreadChat > 0 ? $"💬 Chat ({this.UnreadChat})" : "💬 Chat";
 
 
+    // GameSession is a singleton - only hold its events while the page is on screen or it roots this view model forever
     public void OnAppearing()
     {
+        this.Unhook(); // guard against a double OnAppearing
+        this.session.Ended += this.OnSessionEnded;
+        this.session.StateChanged += this.OnStateChanged;
+        this.session.EmoteReceived += this.OnEmote;
+        this.session.ChatReceived += this.OnChat;
+        this.session.Attach();
+        this.visible = true;
+
+        // the game only starts once we're listening, so no push from the host can slip past us
+        if (!this.started)
+        {
+            this.started = true;
+            _ = this.Start();
+        }
+        else if (this.session.State is { } state)
+        {
+            // catch up on anything that changed while we weren't listening
+            this.Apply(state);
+        }
+    }
+
+    public void OnDisappearing()
+    {
+        this.visible = false;
+        this.session.Detach();
+        this.Unhook();
+        this.emoteTimer?.Cancel();
+    }
+
+
+    void Unhook()
+    {
+        this.session.Ended -= this.OnSessionEnded;
+        this.session.StateChanged -= this.OnStateChanged;
+        this.session.EmoteReceived -= this.OnEmote;
+        this.session.ChatReceived -= this.OnChat;
+    }
+
+
+    async Task Start()
+    {
+        this.IsBusy = true;
+        this.Status = this.Join == null ? "Starting game..." : $"Joining {this.Join.Name ?? "the game"}...";
+        try
+        {
+            if (this.Join == null)
+                await this.session.StartHosting(this.settings.Name, this.settings.AvatarPath);
+            else
+                await this.session.JoinHost(this.Join, this.settings.Name, this.settings.AvatarPath);
+        }
+        catch (Exception ex)
+        {
+            this.IsBusy = false;
+            await this.shell.Dialogs.Alert(this.Join == null ? "Could not host" : "Could not join", ex.Message);
+            await this.shell.Navigator.GoBack();
+            return;
+        }
+        this.IsBusy = false;
+
+        // backed out while we were starting
+        if (!this.visible)
+        {
+            await this.session.Leave();
+            return;
+        }
+
+        this.OnPropertyChanged(nameof(this.IsHost));
         if (this.session.State is { } state)
             this.Apply(state);
     }
-
-    public void OnDisappearing() { }
 
 
     // hub pushes are raised on a background thread
@@ -208,16 +279,6 @@ public partial class GameViewModel : ObservableObject,
 
         await this.session.Leave();
         return true;
-    }
-
-
-    public void Dispose()
-    {
-        this.session.Ended -= this.OnSessionEnded;
-        this.session.StateChanged -= this.OnStateChanged;
-        this.session.EmoteReceived -= this.OnEmote;
-        this.session.ChatReceived -= this.OnChat;
-        this.emoteTimer?.Cancel();
     }
 
 

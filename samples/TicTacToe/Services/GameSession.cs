@@ -35,23 +35,6 @@ public class GameSession
         this.client = client;
         this.engine = engine;
         this.logger = logger;
-
-        // pushes from the host arrive as plain .NET events on the generated proxy
-        client.Hub.StateChanged += state =>
-        {
-            this.State = state;
-            this.StateChanged?.Invoke(this, state);
-        };
-        client.Hub.Emote += (from, emoji) => this.EmoteReceived?.Invoke(this, (from, emoji));
-        client.Hub.ChatReceived += msg => this.ChatReceived?.Invoke(this, msg);
-        client.Disconnected += (_, reason) =>
-        {
-            if (!this.IsHost && this.IsActive)
-            {
-                this.IsActive = false;
-                this.Ended?.Invoke(this, reason.Description);
-            }
-        };
     }
 
 
@@ -153,6 +136,54 @@ public class GameSession
             await this.hub.Disconnect(id, $"{this.State?.XPlayer} removed spectators");
 
         return spectators.Count;
+    }
+
+
+    // ---------- client pushes ----------
+
+    /// <summary>
+    /// Starts relaying pushes from the host - call from the game page's OnAppearing
+    /// </summary>
+    public void Attach()
+    {
+        this.Detach(); // guard against a double attach
+        this.client.Hub.StateChanged += this.OnHubStateChanged;
+        this.client.Hub.Emote += this.OnHubEmote;
+        this.client.Hub.ChatReceived += this.OnHubChat;
+        this.client.Disconnected += this.OnClientDisconnected;
+    }
+
+
+    /// <summary>
+    /// Stops relaying pushes from the host - call from the game page's OnDisappearing
+    /// </summary>
+    public void Detach()
+    {
+        this.client.Hub.StateChanged -= this.OnHubStateChanged;
+        this.client.Hub.Emote -= this.OnHubEmote;
+        this.client.Hub.ChatReceived -= this.OnHubChat;
+        this.client.Disconnected -= this.OnClientDisconnected;
+    }
+
+
+    // pushes from the host arrive as plain .NET events on the generated proxy
+    void OnHubStateChanged(GameState state)
+    {
+        this.State = state;
+        this.StateChanged?.Invoke(this, state);
+    }
+
+    void OnHubEmote(string from, string emoji) => this.EmoteReceived?.Invoke(this, (from, emoji));
+
+    void OnHubChat(ChatMessage msg) => this.ChatReceived?.Invoke(this, msg);
+
+    void OnClientDisconnected(object? sender, HubDisconnect reason)
+    {
+        if (!this.IsHost && this.IsActive)
+        {
+            this.IsActive = false;
+            this.Ended?.Invoke(this, reason.Description);
+        }
     }
 
 

@@ -14,6 +14,9 @@
         <RepositoryUrl>https://github.com/shinyorg/bluetoothle-hubs</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
 
+        <!-- the platforms with a Shiny BLE stack - the host and client packages register it there; plain net10.0 brings its own -->
+        <PlatformTargetFrameworks>net10.0;net10.0-android;net10.0-ios;net10.0-maccatalyst</PlatformTargetFrameworks>
+
         <CI Condition="'$(GITHUB_ACTIONS)' == 'true'">true</CI>
         <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
 

@@ -45,6 +45,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
     readonly BleHubHostOptions hostOptions;
     readonly IServiceProvider services;
     readonly ILogger<BleHubHost>? logger;
+    readonly string serviceUuid;
     readonly Dictionary<Type, HubRuntime> runtimes = new();
     readonly Dictionary<HubRuntime, IGattCharacteristic> characteristics = new();
     readonly SemaphoreSlim startLock = new(1, 1);
@@ -66,6 +67,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
         this.hostOptions = hostOptions;
         this.services = services;
         this.logger = loggerFactory?.CreateLogger<BleHubHost>();
+        this.serviceUuid = BleUuid.Normalize(hostOptions.ServiceUuid, nameof(hostOptions.ServiceUuid));
 
         var list = registrations.ToList();
         var duplicate = list.GroupBy(x => x.CharacteristicUuid, StringComparer.OrdinalIgnoreCase).FirstOrDefault(x => x.Count() > 1);
@@ -84,8 +86,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
     }
 
 
-    readonly HashSet<string> addedServices = new(StringComparer.OrdinalIgnoreCase);
-    string[] advertisedServices = [];
+    bool serviceAdded;
     bool infrastructureRunning;
 
 
@@ -100,13 +101,13 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
 
     internal HubRuntime GetRuntime(Type hubType) => this.runtimes.TryGetValue(hubType, out var runtime)
         ? runtime
-        : throw new InvalidOperationException($"{hubType.Name} is not registered - call AddBleHub<{hubType.Name}>()");
+        : throw new InvalidOperationException($"{hubType.Name} is not registered - add it with AddBleHubServer(server => server.AddHub<{hubType.Name}>(...))");
 
 
     public Task Start(CancellationToken cancellationToken = default)
     {
         if (this.runtimes.Count == 0)
-            throw new InvalidOperationException("No hubs are registered - call AddBleHub<THub>()");
+            throw new InvalidOperationException("No hubs are registered - add them with AddBleHubServer");
 
         return this.StartHubs(this.runtimes.Values.ToList(), cancellationToken);
     }
@@ -166,10 +167,9 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
                     startedInfrastructure = true;
                 }
 
-                // a GATT service holds every hub that shares its UUID - hubs that are stopped stay in it but refuse handshakes,
-                // so starting/stopping one hub never yanks the service out from under another hub's clients
-                foreach (var serviceUuid in starting.Select(x => x.Registration.ServiceUuid).Distinct(StringComparer.OrdinalIgnoreCase))
-                    await this.EnsureService(serviceUuid).ConfigureAwait(false);
+                // one GATT service holds every hub - hubs that are stopped stay in it but refuse handshakes, so starting/stopping
+                // one hub never yanks the service out from under another hub's clients
+                await this.EnsureService().ConfigureAwait(false);
 
                 foreach (var runtime in starting)
                 {
@@ -185,7 +185,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
                 foreach (var runtime in starting)
                     runtime.IsRunning = false;
 
-                this.RemoveUnusedServices();
+                this.RemoveServiceWhenUnused();
                 if (startedInfrastructure || !this.IsRunning)
                     await this.StopInfrastructure().ConfigureAwait(false);
                 throw;
@@ -213,10 +213,9 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
 
             await Task.WhenAll(stopping.Select(x => x.DisconnectAll(disconnect))).ConfigureAwait(false);
 
-            this.RemoveUnusedServices();
-            if (this.IsRunning)
-                await this.UpdateAdvertising().ConfigureAwait(false);
-            else
+            // the other hubs share the service and the advertisement - both stay until the last hub stops
+            this.RemoveServiceWhenUnused();
+            if (!this.IsRunning)
                 await this.StopInfrastructure().ConfigureAwait(false);
 
             this.logger?.LogInformation("Stopped hub(s) {Hubs}: {Reason}", String.Join(", ", stopping.Select(x => x.Registration.HubType.Name)), disconnect.Description);
@@ -233,24 +232,22 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
         foreach (var runtime in this.runtimes.Values)
             runtime.IsRunning = false;
 
-        this.RemoveUnusedServices();
+        this.RemoveServiceWhenUnused();
         _ = this.StopInfrastructure();
         this.startLock.Dispose();
     }
 
 
-    async Task EnsureService(string serviceUuid)
+    async Task EnsureService()
     {
-        if (this.addedServices.Contains(serviceUuid))
+        if (this.serviceAdded)
             return;
 
         // a previous run that crashed may have left the service behind
-        this.hosting.RemoveService(serviceUuid);
-        var hubs = this.runtimes.Values.Where(x => String.Equals(x.Registration.ServiceUuid, serviceUuid, StringComparison.OrdinalIgnoreCase)).ToList();
-
-        await this.hosting.AddService(serviceUuid, true, sb =>
+        this.hosting.RemoveService(this.serviceUuid);
+        await this.hosting.AddService(this.serviceUuid, true, sb =>
         {
-            foreach (var runtime in hubs)
+            foreach (var runtime in this.runtimes.Values)
             {
                 var rt = runtime;
                 this.characteristics[rt] = sb.AddCharacteristic(rt.Registration.CharacteristicUuid, cb => cb
@@ -259,56 +256,37 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
                 );
             }
         }).ConfigureAwait(false);
-        this.addedServices.Add(serviceUuid);
+        this.serviceAdded = true;
     }
 
 
     /// <summary>
-    /// Removes GATT services that no longer have a running hub
+    /// Removes the GATT service once no hub is running
     /// </summary>
-    void RemoveUnusedServices()
+    void RemoveServiceWhenUnused()
     {
-        foreach (var serviceUuid in this.addedServices.ToList())
-        {
-            var hubs = this.runtimes.Values.Where(x => String.Equals(x.Registration.ServiceUuid, serviceUuid, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (hubs.Any(x => x.IsRunning))
-                continue;
+        if (!this.serviceAdded || this.IsRunning)
+            return;
 
-            this.hosting.RemoveService(serviceUuid);
-            this.addedServices.Remove(serviceUuid);
-            foreach (var hub in hubs)
-                this.characteristics.Remove(hub);
-        }
+        this.hosting.RemoveService(this.serviceUuid);
+        this.serviceAdded = false;
+        this.characteristics.Clear();
     }
 
 
     /// <summary>
-    /// Advertises exactly the services that have a running hub. <paramref name="force"/> restarts the advertisement even
-    /// when those services haven't changed (the name has).
+    /// Advertises the service while any hub is running - starting or stopping one hub beside another changes nothing on air.
+    /// <paramref name="force"/> restarts the advertisement (the name has changed).
     /// </summary>
     async Task UpdateAdvertising(bool force = false)
     {
-        var wanted = this.runtimes.Values
-            .Where(x => x.IsRunning)
-            .Select(x => x.Registration.ServiceUuid)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        if (!force && this.hosting.IsAdvertising && wanted.SequenceEqual(this.advertisedServices, StringComparer.OrdinalIgnoreCase))
+        if (!force && this.hosting.IsAdvertising)
             return;
 
         if (this.hosting.IsAdvertising)
             this.hosting.StopAdvertising();
 
-        this.advertisedServices = wanted;
-        if (wanted.Length == 0)
-            return;
-
-        if (wanted.Length > 1)
-            this.logger?.LogWarning("Advertising {Count} 128-bit service UUIDs will likely overflow the advertisement packet - consider giving your hubs one service UUID", wanted.Length);
-
-        await this.hosting.StartAdvertising(new AdvertisementOptions(this.hostOptions.LocalName, wanted)).ConfigureAwait(false);
+        await this.hosting.StartAdvertising(new AdvertisementOptions(this.hostOptions.LocalName, [this.serviceUuid])).ConfigureAwait(false);
     }
 
 
@@ -325,7 +303,6 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
         if (this.hosting.IsAdvertising)
             this.hosting.StopAdvertising();
 
-        this.advertisedServices = [];
         return Task.CompletedTask;
     }
 

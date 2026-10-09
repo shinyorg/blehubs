@@ -8,13 +8,11 @@ namespace TicTacToe.Pages;
 [ShellMap<HomePage>("Home", registerRoute: false)]
 public partial class HomeViewModel(
     ShellServices shell,
-    PlayerSettings settings,
-    GameSession session
+    PlayerSettings settings
 ) : ObservableObject, IPageLifecycleAware
 {
     [ObservableProperty] public partial string PlayerName { get; set; } = settings.Name;
     [ObservableProperty] public partial ImageSource? Avatar { get; set; }
-    [ObservableProperty] public partial bool IsBusy { get; set; }
 
 
     public void OnAppearing() => this.Avatar = settings.AvatarPath is { } p ? ImageSource.FromFile(p) : null;
@@ -54,23 +52,8 @@ public partial class HomeViewModel(
     [RelayCommand]
     async Task Host()
     {
-        if (!this.SaveName())
-            return;
-
-        this.IsBusy = true;
-        try
-        {
-            await session.StartHosting(settings.Name, settings.AvatarPath);
+        if (this.SaveName())
             await shell.Navigator.NavigateToGame();
-        }
-        catch (Exception ex)
-        {
-            await shell.Dialogs.Alert("Could not host", ex.Message);
-        }
-        finally
-        {
-            this.IsBusy = false;
-        }
     }
 
 
