@@ -30,6 +30,12 @@ public interface IBleHubHost
     /// Stops every hub - tells their clients to disconnect, then stops advertising and removes the services
     /// </summary>
     Task Stop(string? reason = null);
+
+    /// <summary>
+    /// Changes the host's name without stopping anything: sets <see cref="BleHubHostOptions.LocalName"/>, re-advertises
+    /// under the new name while hubs are running, and tells every connected client (<see cref="IBleHubConnection.HostRenamed"/>).
+    /// </summary>
+    Task Rename(string? localName, CancellationToken cancellationToken = default);
 }
 
 
@@ -107,6 +113,29 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
 
 
     public Task Stop(string? reason = null) => this.StopHubs(this.runtimes.Values.ToList(), new HubDisconnect(HubDisconnectReason.ServerShutdown, reason));
+
+
+    public async Task Rename(string? localName, CancellationToken cancellationToken = default)
+    {
+        await this.startLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (String.Equals(this.hostOptions.LocalName, localName, StringComparison.Ordinal))
+                return;
+
+            this.hostOptions.LocalName = localName;
+            if (this.IsRunning)
+                await this.UpdateAdvertising(force: true).ConfigureAwait(false);
+
+            // every hub, running or not - a stopped hub can still have clients on another transport
+            await Task.WhenAll(this.runtimes.Values.Select(x => x.SetHostName(localName, cancellationToken))).ConfigureAwait(false);
+            this.logger?.LogInformation("Host renamed to '{Name}'", localName);
+        }
+        finally
+        {
+            this.startLock.Release();
+        }
+    }
 
 
     public Task StartHub(HubRuntime runtime, CancellationToken cancellationToken) => this.StartHubs([runtime], cancellationToken);
@@ -254,9 +283,10 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
 
 
     /// <summary>
-    /// Advertises exactly the services that have a running hub
+    /// Advertises exactly the services that have a running hub. <paramref name="force"/> restarts the advertisement even
+    /// when those services haven't changed (the name has).
     /// </summary>
-    async Task UpdateAdvertising()
+    async Task UpdateAdvertising(bool force = false)
     {
         var wanted = this.runtimes.Values
             .Where(x => x.IsRunning)
@@ -265,7 +295,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        if (this.hosting.IsAdvertising && wanted.SequenceEqual(this.advertisedServices, StringComparer.OrdinalIgnoreCase))
+        if (!force && this.hosting.IsAdvertising && wanted.SequenceEqual(this.advertisedServices, StringComparer.OrdinalIgnoreCase))
             return;
 
         if (this.hosting.IsAdvertising)

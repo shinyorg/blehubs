@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Shiny;
 using TicTacToe.Game;
+using TicTacToe.Hub;
 using TicTacToe.Services;
 
 namespace TicTacToe.Pages;
@@ -34,12 +35,15 @@ public partial class GameViewModel : ObservableObject,
         this.session.Ended += this.OnSessionEnded;
         this.session.StateChanged += this.OnStateChanged;
         this.session.EmoteReceived += this.OnEmote;
+        this.session.ChatReceived += this.OnChat;
     }
 
 
     public ObservableCollection<CellViewModel> Cells { get; } = new();
     public bool IsHost => this.session.IsHost;
     public string[] Emotes { get; } = ["👍", "😂", "😱", "🔥", "🤝"];
+    public ObservableCollection<ChatLineViewModel> Chat { get; } = new();
+    public int MaxChatLength => GameSession.MaxChatLength;
 
     [ObservableProperty] public partial string Status { get; set; } = "";
     [ObservableProperty] public partial string Role { get; set; } = "";
@@ -53,6 +57,22 @@ public partial class GameViewModel : ObservableObject,
     [ObservableProperty] public partial bool CanRematch { get; set; }
     [ObservableProperty] public partial string? Emote { get; set; }
     [ObservableProperty] public partial bool IsBusy { get; set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ChatButtonText))]
+    public partial bool IsChatOpen { get; set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ChatButtonText))]
+    public partial int UnreadChat { get; set; }
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SendChatCommand))]
+    public partial string ChatText { get; set; } = "";
+
+    public string ChatButtonText => this.IsChatOpen
+        ? "Back to the board"
+        : this.UnreadChat > 0 ? $"💬 Chat ({this.UnreadChat})" : "💬 Chat";
 
 
     public void OnAppearing()
@@ -70,6 +90,48 @@ public partial class GameViewModel : ObservableObject,
 
     void OnEmote(object? sender, (string From, string Emoji) e)
         => this.shell.MainThread.BeginInvokeOnMainThread(() => this.ShowEmote($"{e.From} {e.Emoji}"));
+
+
+    void OnChat(object? sender, ChatMessage msg) => this.shell.MainThread.BeginInvokeOnMainThread(() =>
+    {
+        var mine = msg.From == this.session.MyName && msg.Mark == this.session.MyMark;
+        this.Chat.Add(new ChatLineViewModel(msg, mine));
+
+        if (!this.IsChatOpen && !mine)
+        {
+            this.UnreadChat++;
+            this.ShowEmote($"💬 {msg.From}: {msg.Text}");
+        }
+    });
+
+
+    [RelayCommand]
+    void ToggleChat()
+    {
+        this.IsChatOpen = !this.IsChatOpen;
+        if (this.IsChatOpen)
+            this.UnreadChat = 0;
+    }
+
+
+    bool CanSendChat() => !String.IsNullOrWhiteSpace(this.ChatText);
+
+    [RelayCommand(CanExecute = nameof(CanSendChat))]
+    async Task SendChat()
+    {
+        var text = this.ChatText;
+        this.ChatText = "";
+        try
+        {
+            // the host echoes it back to everyone, us included
+            await this.session.Chat(text);
+        }
+        catch (Exception ex)
+        {
+            this.ChatText = text;
+            await this.shell.Dialogs.Alert("Chat", ex.Message);
+        }
+    }
 
 
     [RelayCommand]
@@ -154,6 +216,7 @@ public partial class GameViewModel : ObservableObject,
         this.session.Ended -= this.OnSessionEnded;
         this.session.StateChanged -= this.OnStateChanged;
         this.session.EmoteReceived -= this.OnEmote;
+        this.session.ChatReceived -= this.OnChat;
         this.emoteTimer?.Cancel();
     }
 
@@ -242,6 +305,21 @@ public partial class GameViewModel : ObservableObject,
         }
         catch (OperationCanceledException) { }
     }
+}
+
+
+public class ChatLineViewModel(ChatMessage msg, bool isMine)
+{
+    public string From { get; } = msg.Mark == Mark.None ? $"👀 {msg.From}" : $"{msg.From} ({msg.Mark})";
+    public string Text { get; } = msg.Text;
+    public string Time { get; } = msg.Sent.ToLocalTime().ToString("t");
+    public bool IsMine { get; } = isMine;
+    public Color NameColor { get; } = msg.Mark switch
+    {
+        Mark.X => Color.FromArgb("#E53935"),
+        Mark.O => Color.FromArgb("#1E88E5"),
+        _ => Colors.Gray
+    };
 }
 
 

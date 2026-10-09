@@ -62,6 +62,15 @@ public class TestHub(HubLog log) : BleHub<ITestHub>
         return Task.CompletedTask;
     }
 
+    public override Task OnRenamedAsync(string? previousName)
+    {
+        if (this.Context.Client.Name == "Boom")
+            throw new InvalidOperationException("Not that name");
+
+        log.Add($"renamed:{previousName}->{this.Context.Client.Name}");
+        return Task.CompletedTask;
+    }
+
     public Task<Payload> Echo(Payload payload) => Task.FromResult(payload);
     public Task<string> Concat(string a, int b, Payload c) => Task.FromResult($"{a}{b}{c.Text}{c.Number}");
     public Task<string?> WhoAmI() => Task.FromResult(this.Context.Client.Name);

@@ -51,8 +51,17 @@ public sealed record DisconnectInfo(string? Reason, HubDisconnectReason? Kind = 
 }
 
 
+/// <summary>
+/// A name changed after the handshake. Client to host (<see cref="FrameKind.Rename"/>): the client's new name - the host
+/// answers with a Completion, or an Error when it refuses. Host to client (<see cref="FrameKind.HostRenamed"/>): the
+/// host's new name. Peers older than these frames refuse a Rename and ignore a HostRenamed.
+/// </summary>
+public sealed record RenameInfo(string? Name);
+
+
 [JsonSerializable(typeof(HandshakeInfo))]
 [JsonSerializable(typeof(HandshakeAck))]
 [JsonSerializable(typeof(RemoteError))]
 [JsonSerializable(typeof(DisconnectInfo))]
+[JsonSerializable(typeof(RenameInfo))]
 internal partial class BleHubProtocolJsonContext : JsonSerializerContext;

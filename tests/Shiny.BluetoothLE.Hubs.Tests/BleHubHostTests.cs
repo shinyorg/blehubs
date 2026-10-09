@@ -295,10 +295,52 @@ public class BleHubHostTests : IAsyncLifetime
     }
 
 
+    [Fact]
+    public async Task RenameReadvertisesAndTellsClientsWithoutStopping()
+    {
+        this.Build(ServiceA);
+        await this.host.Start();
+        var test = (BleHubClient)(object)await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        var channel = new RecordingChannel();
+        await this.testHub.TransportEndpoint.Connect("wifi-1", new Protocol.HandshakeInfo(1, "WiFi", null, null), channel, CancellationToken.None);
+
+        await this.host.Rename("Renamed");
+
+        Assert.Equal("Renamed", this.hosting.AdvertisedName);
+        Assert.Equal([ServiceA], this.hosting.AdvertisedServices);
+        Assert.Equal(2, this.hosting.Log.Count(x => x == $"advertise:{ServiceA}"));
+        await WaitFor(() => test.HostName == "Renamed");
+        Assert.Equal("Renamed", channel.HostName);
+        Assert.Equal(2, this.testHub.ConnectedClients.Count);
+        Assert.Equal(BleHubClientStatus.Connected, test.Status);
+    }
+
+
+    [Fact]
+    public async Task RenameWhileStoppedIsUsedOnTheNextStart()
+    {
+        this.Build(ServiceA);
+        await this.host.Rename("Later");
+        Assert.False(this.hosting.IsAdvertising);
+
+        await this.host.Start();
+        Assert.Equal("Later", this.hosting.AdvertisedName);
+        var test = (BleHubClient)(object)await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        Assert.Equal("Later", test.HostName);
+    }
+
+
     sealed class RecordingChannel : IBleHubPeerChannel
     {
         public HubDisconnect? Disconnect { get; private set; }
+        public string? HostName { get; private set; }
         public Task Push(string eventName, byte[] arguments, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        Task IBleHubPeerChannel.HostRenamed(string? hostName, CancellationToken cancellationToken)
+        {
+            this.HostName = hostName;
+            return Task.CompletedTask;
+        }
 
         Task IBleHubPeerChannel.Disconnect(HubDisconnect disconnect, CancellationToken cancellationToken)
         {

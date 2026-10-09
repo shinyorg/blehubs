@@ -54,9 +54,15 @@ public interface IBleHubConnection
     BleHubHostInfo? Host { get; }
 
     /// <summary>
-    /// The host's advertised name, from the handshake
+    /// The host's advertised name, from the handshake - kept up to date when the host renames itself
     /// </summary>
     string? HostName { get; }
+
+    /// <summary>
+    /// The name the host knows this client by: <see cref="BleHubConnectOptions.Name"/>, or the latest <see cref="Rename"/>.
+    /// Null while disconnected.
+    /// </summary>
+    string? ClientName { get; }
 
     /// <summary>
     /// Whether the host serves L2CAP file transfers (and this device supports L2CAP)
@@ -73,12 +79,26 @@ public interface IBleHubConnection
     event EventHandler<HubDisconnect>? Disconnected;
 
     /// <summary>
+    /// The host changed its name (IBleHubHost.Rename) - <see cref="HostName"/> already has it. Raised in order with the
+    /// hub's events.
+    /// </summary>
+    event EventHandler<string?>? HostRenamed;
+
+    /// <summary>
     /// Scans for hosts serving this hub. Dispose the subscription to stop scanning.
     /// </summary>
     IObservable<BleHubHostInfo> Discover();
 
     Task Connect(BleHubHostInfo host, BleHubConnectOptions? options = null, CancellationToken cancellationToken = default);
     Task Disconnect();
+
+    /// <summary>
+    /// Changes the name the host knows this client by, without reconnecting. The host runs ValidateClient and the hub's
+    /// OnRenamedAsync; a refusal throws <see cref="BleHubRemoteException"/> of type
+    /// <see cref="BleHubRemoteException.RenameRefused"/> and the name is unchanged. Hosts older than this feature refuse it too.
+    /// A later Connect uses the name in its own options.
+    /// </summary>
+    Task Rename(string? name, CancellationToken cancellationToken = default);
 
     Task<L2CapTransferResult> UploadFile(string localFilePath, string? remoteFileName = null, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default);
     Task<L2CapTransferResult> UploadStream(Stream source, long length, string remoteFileName, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default);

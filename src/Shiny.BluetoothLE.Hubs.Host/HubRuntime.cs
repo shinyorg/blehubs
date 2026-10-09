@@ -66,6 +66,7 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
 
     public event EventHandler<BleHubConnectedClient>? ClientConnected;
     public event EventHandler<BleHubClientDisconnectedEventArgs>? ClientDisconnected;
+    public event EventHandler<BleHubClientRenamedEventArgs>? ClientRenamed;
 
 
     public BleHubConnectedClient? FindClient(string connectionId)
@@ -266,6 +267,10 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
                     await this.OnInvoke(peer, message).ConfigureAwait(false);
                     break;
 
+                case FrameKind.Rename:
+                    await this.OnRename(peer, message).ConfigureAwait(false);
+                    break;
+
                 default:
                     await this.SendError(peer, message.MessageId, nameof(BleHubProtocolException), $"Unexpected message kind {message.Kind}").ConfigureAwait(false);
                     break;
@@ -340,6 +345,100 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
             }
         }
         return rejection;
+    }
+
+
+    async Task OnRename(HostPeer peer, BleHubMessage message)
+    {
+        if (peer.Client is not { } client)
+        {
+            await this.SendError(peer, message.MessageId, nameof(BleHubProtocolException), "Handshake required").ConfigureAwait(false);
+            return;
+        }
+
+        var rejection = await this.Rename(peer, client, ProtocolSerializer.ReadRename(message.Payload).Name).ConfigureAwait(false);
+        if (rejection == null)
+            await this.Send(peer, FrameKind.Completion, message.MessageId, null, ReadOnlyMemory<byte>.Empty, this.lifetime.Token).ConfigureAwait(false);
+        else
+            await this.SendError(peer, message.MessageId, BleHubRemoteException.RenameRefused, rejection).ConfigureAwait(false);
+    }
+
+
+    /// <summary>
+    /// The rename rules every transport shares: ValidateClient sees the new name, then OnRenamedAsync runs. Returns null
+    /// when the client has its new name.
+    /// </summary>
+    async Task<string?> Rename(HostPeer peer, BleHubConnectedClient client, string? name)
+    {
+        // one rename at a time per client, so the previous name each hook sees is the one it replaced
+        await peer.RenameLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var previous = client.Name;
+            if (String.Equals(previous, name, StringComparison.Ordinal))
+                return null;
+
+            var info = new HandshakeInfo(FrameCodec.ProtocolVersion, name, client.AppVersion, new Dictionary<string, string>(client.Properties));
+            if (this.registration.Options.ValidateClient?.Invoke(info) is { } rejection)
+                return rejection;
+
+            client.Name = name;
+            try
+            {
+                await this.RunLifecycle(peer, client, hub => hub.OnRenamedAsync(previous)).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                client.Name = previous;
+                return ex.Message;
+            }
+
+            this.logger?.LogInformation("Client {Client} on {Hub} renamed from '{Previous}'", client, this.registration.HubType.Name, previous);
+            this.ClientRenamed?.Invoke(this, new BleHubClientRenamedEventArgs(client, previous));
+            return null;
+        }
+        finally
+        {
+            peer.RenameLock.Release();
+        }
+    }
+
+
+    /// <summary>
+    /// The host has a new name - tell every connected client, over whichever transport it is on
+    /// </summary>
+    public async Task SetHostName(string? hostName, CancellationToken cancellationToken)
+    {
+        this.HostName = hostName;
+        var payload = ProtocolSerializer.Serialize(new RenameInfo(hostName));
+
+        await Task.WhenAll(this.ReadyPeers.ToList().Select(async peer =>
+        {
+            try
+            {
+                if (peer.Channel == null)
+                {
+                    await this.Send(peer, FrameKind.HostRenamed, peer.NextHostMessageId(), null, payload, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    // in order with pushes
+                    await peer.SendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await peer.Channel.HostRenamed(hostName, cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        peer.SendLock.Release();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                this.logger?.LogWarning(ex, "Failed to tell {Client} the host's new name", peer.Client);
+            }
+        })).ConfigureAwait(false);
     }
 
 
@@ -488,6 +587,13 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
     public void Disconnected(string connectionId, HubDisconnect disconnect) => this.OnPeerGone(connectionId, disconnect);
 
 
+    public Task<string?> Rename(string connectionId, string? name, CancellationToken cancellationToken)
+    {
+        var (peer, client) = this.GetExternal(connectionId);
+        return this.Rename(peer, client, name);
+    }
+
+
     (HostPeer Peer, BleHubConnectedClient Client) GetExternal(string connectionId)
     {
         if (!this.peers.TryGetValue(connectionId, out var peer) || peer.Channel == null || peer.Client is not { } client)
@@ -567,6 +673,7 @@ internal sealed class HostPeer(string id, object? native, MessageReassembler rea
     public int Mtu { get; set; } = 23;
     public MessageReassembler Reassembler { get; } = reassembler;
     public SemaphoreSlim SendLock { get; } = new(1, 1);
+    public SemaphoreSlim RenameLock { get; } = new(1, 1);
     public BleHubConnectedClient? Client { get; set; }
 
     /// <summary>
@@ -612,3 +719,11 @@ public sealed record BleHubClientDisconnectedEventArgs(BleHubConnectedClient Cli
     /// </summary>
     public string Reason => this.Disconnect.Description;
 }
+
+
+/// <summary>
+/// A connected client changed its name
+/// </summary>
+/// <param name="Client">Who renamed - <see cref="BleHubConnectedClient.Name"/> is the new name</param>
+/// <param name="PreviousName">The name it had before</param>
+public sealed record BleHubClientRenamedEventArgs(BleHubConnectedClient Client, string? PreviousName);

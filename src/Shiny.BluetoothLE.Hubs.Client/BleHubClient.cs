@@ -43,7 +43,8 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     public string CharacteristicUuid { get; }
     public BleHubClientStatus Status { get; private set; } = BleHubClientStatus.Disconnected;
     public BleHubHostInfo? Host => this.connection?.Host;
-    public string? HostName => this.connection?.Ack?.HostName;
+    public string? HostName => this.connection?.HostName;
+    public string? ClientName => this.connection?.ClientName;
 
     public bool CanTransferFiles =>
         this.Status == BleHubClientStatus.Connected
@@ -60,6 +61,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     public event EventHandler<BleHubStatusChangedEventArgs>? StatusChanged;
     public event EventHandler? Connected;
     public event EventHandler<HubDisconnect>? Disconnected;
+    public event EventHandler<string?>? HostRenamed;
 
 
     public IObservable<BleHubHostInfo> Discover()
@@ -181,7 +183,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
             conn.External = createTransport(new ExternalEvents(this, conn));
 
             var ack = await conn.External.Handshake(this.CreateHandshake(options), cancellationToken).ConfigureAwait(false);
-            this.Accept(conn, ack, 0);
+            this.Accept(conn, ack, 0, options);
         }
         catch (Exception ex)
         {
@@ -222,6 +224,34 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
             }
         }
         await this.Teardown(disconnect, true).ConfigureAwait(false);
+    }
+
+
+    public async Task Rename(string? name, CancellationToken cancellationToken = default)
+    {
+        this.AssertConnected();
+        var conn = this.connection ?? throw new BleHubDisconnectedException("Not connected to a host");
+
+        if (conn.External is { } external)
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, conn.Lifetime.Token);
+            cts.CancelAfter(this.services.Options.RequestTimeout);
+            try
+            {
+                await external.Rename(name, cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw conn.Lifetime.IsCancellationRequested
+                    ? new BleHubDisconnectedException("The connection to the host was closed", conn.CloseReason)
+                    : new TimeoutException($"No reply from the host within {this.services.Options.RequestTimeout}");
+            }
+        }
+        else
+        {
+            await this.protocol.Rename(name, cancellationToken).ConfigureAwait(false);
+        }
+        conn.ClientName = name;
     }
 
 
@@ -400,7 +430,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     {
         this.protocol.Mtu = mtu;
         var ack = await this.protocol.Handshake(this.CreateHandshake(options), cancellationToken).ConfigureAwait(false);
-        this.Accept(conn, ack, mtu);
+        this.Accept(conn, ack, mtu, options);
     }
 
 
@@ -412,12 +442,14 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     );
 
 
-    void Accept(Connection conn, HandshakeAck ack, int mtu)
+    void Accept(Connection conn, HandshakeAck ack, int mtu, BleHubConnectOptions? options)
     {
         if (!ack.Accepted)
             throw new BleHubException($"Host refused the connection: {ack.Reason}");
 
         conn.Ack = ack;
+        conn.HostName = ack.HostName;
+        conn.ClientName = options?.Name;
         this.SetStatus(BleHubClientStatus.Connected, null);
         this.Connected?.Invoke(this, EventArgs.Empty);
         this.logger?.LogInformation("Connected to '{Host}' (MTU {Mtu}, file PSM {Psm})", ack.HostName, mtu, ack.FileTransferPsm);
@@ -425,7 +457,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
 
 
     /// <summary>
-    /// Pushes are raised one at a time, in the order the host sent them
+    /// Pushes (and host renames) are raised one at a time, in the order the host sent them
     /// </summary>
     async Task PumpPushes(Connection conn)
     {
@@ -433,11 +465,20 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         {
             try
             {
-                this.OnPush(message.Name ?? "", new BleHubArgumentReader(this.services.Serializer, message.Payload));
+                if (message.Kind == FrameKind.HostRenamed)
+                {
+                    conn.HostName = ProtocolSerializer.ReadRename(message.Payload).Name;
+                    this.logger?.LogInformation("Host renamed to '{Host}'", conn.HostName);
+                    this.HostRenamed?.Invoke(this, conn.HostName);
+                }
+                else
+                {
+                    this.OnPush(message.Name ?? "", new BleHubArgumentReader(this.services.Serializer, message.Payload));
+                }
             }
             catch (Exception ex)
             {
-                this.logger?.LogError(ex, "Handler for host event '{Event}' failed", message.Name);
+                this.logger?.LogError(ex, "Handler for host event '{Event}' failed", message.Name ?? message.Kind.ToString());
             }
         }
     }
@@ -561,6 +602,9 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         public void Pushed(string eventName, ReadOnlyMemory<byte> arguments)
             => conn.Pushes.Writer.TryWrite(new BleHubMessage(FrameKind.Push, 0, eventName, arguments));
 
+        public void HostRenamed(string? hostName)
+            => conn.Pushes.Writer.TryWrite(new BleHubMessage(FrameKind.HostRenamed, 0, null, ProtocolSerializer.Serialize(new RenameInfo(hostName))));
+
         public void Closed(HubDisconnect disconnect)
         {
             // only the connection this transport was created for - a late close from an old transport must not end a new one
@@ -574,6 +618,8 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     {
         public BleHubHostInfo? Host { get; } = host;
         public HandshakeAck? Ack { get; set; }
+        public string? HostName { get; set; }
+        public string? ClientName { get; set; }
         public bool OwnsBleConnection { get; set; }
         public Func<byte[], CancellationToken, Task>? Write { get; set; }
         public IBleHubClientTransport? External { get; set; }

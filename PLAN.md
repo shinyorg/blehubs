@@ -116,11 +116,13 @@ The body is `[name length:1][name utf8][payload]`. Frames are reassembled per (p
 | 0x10 | Invoke | C→H | method | arguments |
 | 0x12 | StreamInvoke | C→H | method | arguments |
 | 0x13 | Cancel | C→H | – | (cancels the invocation or stream with that id) |
+| 0x14 | Rename | C→H | – | `RenameInfo` (the client's new name). Answered with `Completion`, or `Error` of type `HubRenameRefused` |
 | 0x21 | Completion | H→C | – | serialized result, empty for `Task` |
 | 0x22 | StreamItem | H→C | – | serialized item |
 | 0x23 | StreamEnd | H→C | – | – |
 | 0x24 | Error | H→C | – | `RemoteError` (type, message) |
 | 0x30 | Push | H→C | event | arguments |
+| 0x31 | HostRenamed | H→C | – | `RenameInfo` (the host's new name) |
 | 0x40 | Disconnect | H→C, C→H | – | `DisconnectInfo` (reason, kind) |
 
 **Arguments**: `[count:1]` followed by `count × ([length:4][serialized value])`. Each value is serialized with its static type through `IBleHubSerializer`, which keeps it AOT-safe.
@@ -137,8 +139,17 @@ protocol version stays at 1.
   dropped central as an unsubscribe. An older host answers this frame with an `Error` frame, which the leaving client
   ignores, and still sees the unsubscribe.
 
+**Rename**: `RenameInfo` is `{ Name }`. Both frames are additive, so the protocol version stays at 1.
+- **Client → host** (`Rename`): the host runs `ValidateClient` with the new name (and the handshake's app version and
+  properties), then `OnRenamedAsync`, and replies `Completion`. A refusal is an `Error` of type `HubRenameRefused`
+  (`BleHubRemoteException.RenameRefused`) whose message is the reason. An older host answers with an `Error`
+  ("Unexpected message kind"), so the client gets a `BleHubRemoteException` either way.
+- **Host → client** (`HostRenamed`): sent with a host-allocated id. The client delivers it through the same ordered pump
+  as pushes, so it is raised in order with hub events. An older client drops it (unknown host message id) and keeps the
+  handshake's host name.
+
 **Rules**
-- Client message ids are 1..0x7FFF. Host-allocated ids (pushes, disconnect) have the high bit set.
+- Client message ids are 1..0x7FFF. Host-allocated ids (pushes, host renames, disconnect) have the high bit set.
 - Reassembly limits:
   - `MaxPayloadSize` (default 256 KB)
   - reassembly timeout (default 30 s)
@@ -182,6 +193,9 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
 - **`IBleHubHost`**:
   - `Start()` / `Stop(reason)` start or stop **every** hub.
   - `IsRunning` is true while any hub runs.
+  - `Rename(localName)` changes the host's name without stopping anything. It sets `BleHubHostOptions.LocalName`,
+    restarts advertising under the new name while hubs run (even though the service UUIDs didn't change), and sends
+    `HostRenamed` to every connected client on every transport. While stopped it only sets the name for the next `Start`.
 - **Per-hub start/stop**: `IHubContext<THub>.Start()` / `Stop(reason)` / `IsRunning`.
   - A stopped hub tells its clients to disconnect and refuses new handshakes ("Hub is not running").
   - A GATT service holds every hub that shares its UUID. It is added when the first of those hubs starts and removed only when the last one stops, so stopping one hub never drops another hub's clients.
@@ -193,12 +207,14 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
   - `Clients`: `All`, `Others`, `Caller`, `Client(id)`, `Clients(ids)`, `AllExcept(ids)`, `Group(name)`, `Groups(names)`, `GroupExcept(name, ids)`, `OthersInGroup(name)`
   - `Groups`: `AddToGroupAsync` / `RemoveFromGroupAsync`
   - `OnConnectedAsync` / `OnDisconnectedAsync(HubDisconnect)`. By default the latter calls `OnDisconnectedAsync(string? reason)` with `disconnect.Description`, so either override works.
+  - `OnRenamedAsync(previousName)`: runs when a connected client renames, after `ValidateClient` accepted the new name and before the client is told. `Context.Client.Name` already has the new name. Throwing refuses the rename: the name is put back and the client gets the exception's message. Renames run one at a time per client.
 - **`IHubContext<THub>`**:
   - `Start()` / `Stop(reason)` / `IsRunning`
   - `Clients`, through the generated extension property
   - `Groups`
   - `ConnectedClients`
   - `Disconnect(connectionId, reason)`
+  - `ClientRenamed`: `BleHubClientRenamedEventArgs(Client, PreviousName)`, raised after a rename is accepted. `BleHubConnectedClient.Name` follows renames.
 - **Disconnect is cooperative.** iOS `CBPeripheralManager` can't drop a central, so the host sends `Disconnect` and forgets the client. The client library disconnects itself when it receives it.
 - **Disconnect reasons**: every departure is a `HubDisconnect(Reason, Message)`. `Description` is the message, or a default text for the reason.
   - `ClientDisconnect`: the client sent a `Disconnect` frame (it called `Disconnect()` or was disposed).
@@ -222,7 +238,8 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
     4. Handshake.
     5. Become `Ready`.
   - `Disconnect()`
-  - `HostName`, `CanTransferFiles`
+  - `HostName` (kept up to date when the host renames), `CanTransferFiles`
+  - `Rename(name)` / `ClientName`, and the `HostRenamed` event
   - `UploadFile` / `UploadStream` / `DownloadFile`
 - **Calls**:
   - A per-call timeout comes from `BleHubProtocolOptions.RequestTimeout`. Streams have no overall timeout.
@@ -234,6 +251,7 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
   - `ClientTimeout`: the BLE link dropped.
   - `ServerDisconnect` / `ServerShutdown`: from the host's `Disconnect` frame.
   - `ConnectionFailed`: a connect or handshake failed. `Disconnected` isn't raised, because the client never connected.
+- **Renaming**: `Rename(name)` needs a connection (`BleHubDisconnectedException` otherwise). Renaming to the current name is a no-op. A refusal throws `BleHubRemoteException` of type `RenameRefused` and keeps the old name. `ClientName` is `BleHubConnectOptions.Name` or the latest rename, and null while disconnected. A later `Connect` uses its own options' name. `HostRenamed` is raised after `HostName` changes, in order with pushes.
 - Pushes are raised on a background thread. UI code marshals them to the main thread.
 
 ## 6a. File transfer (L2CAP)
@@ -270,12 +288,13 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
   - `MakeMove(cell)` → `MoveResult`
   - `Rematch()`
   - `SendEmote(emoji)`
-  - pushes `StateChanged(GameState)` and `Emote(from, emoji)`
+  - `SendChat(text)`: the host trims the text to 200 characters and stamps the sender's name and mark, so clients can't spoof who said it
+  - pushes `StateChanged(GameState)`, `Emote(from, emoji)` and `ChatReceived(ChatMessage)`. The sender gets its own line back through the push
   - `OnDisconnectedAsync` frees the O seat.
 - **Host-local play**: the host's own UI calls `GameEngine` directly, then broadcasts through `IHubContext<GameHub>`. That shows hub usage from outside a hub.
 - **Spectators**: "Remove spectators" uses `IHubContext.Disconnect` for every member of the spectators group.
 - **Avatars**: the client uploads its avatar over L2CAP before calling `Join`. Each side downloads the other's avatar using the file name carried in `GameState`.
-- **Pages**: `HomePage` (name, avatar, Host or Join), `JoinPage` (live discovery list), and `GamePage` (board, avatars, score, emotes, rematch, leave). They use `[ShellMap]` with `AddGeneratedMaps()`, plus `INavigator` and `IDialogs`.
+- **Pages**: `HomePage` (name, avatar, Host or Join), `JoinPage` (live discovery list), and `GamePage` (board, avatars, score, emotes, chat, rematch, leave). They use `[ShellMap]` with `AddGeneratedMaps()`, plus `INavigator` and `IDialogs`.
 - **Platform setup**:
   - Android: `BLUETOOTH_SCAN` (`neverForLocation`), `BLUETOOTH_CONNECT` and `BLUETOOTH_ADVERTISE`, plus the legacy permissions with `maxSdkVersion=30`.
   - iOS: `NSBluetoothAlwaysUsageDescription`.
@@ -296,6 +315,8 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
 | Background | Foreground only |
 | Auth / security | None in v1, apart from opt-in exposure and the `ValidateClient` handshake hook |
 | Disconnect reasons | Typed `HubDisconnectReason` + optional message, on both sides (2026-10-08). The client says goodbye with a `Disconnect` frame so the host can tell leaving from a dropped link. Additive JSON, protocol version stays 1 |
+| Renaming (2026-10-09) | Clients and the host rename without reconnecting, through additive `Rename` / `HostRenamed` frames. The protocol version stays 1, because older peers refuse or ignore the frames cleanly |
+| Telling other clients about a rename | App logic in the hub (`OnRenamedAsync` pushes to `Clients.Others`). The library gives the hook and `ClientRenamed`, and pushes nothing itself |
 | Other transports (§13) | Hidden host and client seams in this repo. Wi-Fi itself (Switchboard, mDNS, transport choice) lives in Shiny.SwitchboardR, its own repo, which references this one through NuGet |
 
 ## 10. Status
@@ -311,6 +332,8 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
 - **2026-10-08**: typed disconnect reasons (`HubDisconnect`, `HubDisconnectReason`). The client now sends `Disconnect` to the host before unsubscribing, and `DisconnectInfo` gained `Kind`. **Breaking API**: `IBleHubConnection.Disconnected` is `EventHandler<HubDisconnect>`, and `BleHubClientDisconnectedEventArgs`, `BleHubStatusChangedEventArgs` and `BleHubDisconnectedException` carry a `HubDisconnect`. The wire stays compatible. 82 tests pass.
 - **2026-10-08**: `BleHubConnectedClient.Peripheral`, the central a BLE client is connected through. It is null for clients on another transport, and Shiny.SwitchboardR exposes it as `HubConnection.Ble`. 83 tests pass.
   - **Not yet verified:** that a real iOS and Android host each see the goodbye before the unsubscribe.
+- **2026-10-09**: renaming without reconnecting. New frames `Rename` (0x14) and `HostRenamed` (0x31), additive, so the protocol stays at 1. Client: `Rename`, `ClientName`, `HostRenamed`. Host: `OnRenamedAsync`, `IHubContext.ClientRenamed`, `IBleHubHost.Rename` (re-advertises without stopping). Transport seams gained rename members (§13). 94 tests pass.
+  - **Not yet verified:** that a real client's scan shows the host's new advertised name.
 
 ## 11. Future
 
@@ -342,3 +365,10 @@ The seams carry a `HubDisconnect`, so a transport reports why a client left:
 
 A transport sends the `HubDisconnect` to the other side itself. `BleHubClient.Disconnect()` sends the BLE `Disconnect`
 frame only over BLE.
+
+Renames cross the seams too:
+- host: `IBleHubTransportEndpoint.Rename(connectionId, name, ct)` returns null or the refusal reason (relay it as a
+  `BleHubRemoteException` of type `RenameRefused`), and `IBleHubPeerChannel.HostRenamed(hostName, ct)`, called in
+  order with `Push`. It is a default interface method (no-op), so existing channels keep compiling.
+- client: `IBleHubClientTransport.Rename(name, ct)` (the default throws `NotSupportedException`), and
+  `IBleHubClientTransportEvents.HostRenamed(hostName)`, called in order with `Pushed`.

@@ -16,15 +16,22 @@ public interface IGameHub
     Task<MoveResult> MakeMove(int cell);
     Task Rematch();
     Task SendEmote(string emoji);
+    Task SendChat(string text);
 
     // host -> clients
     event Action<GameState> StateChanged;
     event Action<string, string> Emote;
+    event Action<ChatMessage> ChatReceived;
 }
 
 
 public record JoinResult(Mark YouAre, GameState State);
 public record MoveResult(bool Accepted, string? Error);
+
+/// <summary>
+/// A chat line - Mark is None for spectators
+/// </summary>
+public record ChatMessage(string From, Mark Mark, string Text, DateTimeOffset Sent);
 
 
 /// <summary>
@@ -33,6 +40,7 @@ public record MoveResult(bool Accepted, string? Error);
 [JsonSerializable(typeof(JoinResult))]
 [JsonSerializable(typeof(MoveResult))]
 [JsonSerializable(typeof(GameState))]
+[JsonSerializable(typeof(ChatMessage))]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(int))]
 [JsonSourceGenerationOptions(UseStringEnumConverter = true)]

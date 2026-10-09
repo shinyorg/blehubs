@@ -52,6 +52,13 @@ public class GameHub(GameEngine engine, GameSession session) : BleHub<IGameHub>
     public Task SendEmote(string emoji) => session.BroadcastEmote(this.Context.Client.Name ?? "?", emoji);
 
 
+    public Task SendChat(string text) => session.BroadcastChat(
+        this.Context.Client.Name ?? "?",
+        engine.GetMark(this.Context.ConnectionId),
+        text
+    );
+
+
     public override Task OnConnectedAsync()
     {
         return base.OnConnectedAsync();

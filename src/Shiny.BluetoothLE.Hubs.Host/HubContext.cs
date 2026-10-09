@@ -34,6 +34,11 @@ public interface IHubContext<THub> where THub : class
     event EventHandler<BleHubClientDisconnectedEventArgs>? ClientDisconnected;
 
     /// <summary>
+    /// A connected client changed its name (<see cref="IBleHubConnection.Rename"/>)
+    /// </summary>
+    event EventHandler<BleHubClientRenamedEventArgs>? ClientRenamed;
+
+    /// <summary>
     /// Ends a client's session (cooperative - the client library disconnects itself)
     /// </summary>
     Task Disconnect(string connectionId, string? reason = null);
@@ -78,6 +83,12 @@ internal sealed class HubContext<THub>(Func<HubRuntime> getRuntime, BleHubHost? 
     {
         add => this.Runtime.ClientDisconnected += value;
         remove => this.Runtime.ClientDisconnected -= value;
+    }
+
+    public event EventHandler<BleHubClientRenamedEventArgs>? ClientRenamed
+    {
+        add => this.Runtime.ClientRenamed += value;
+        remove => this.Runtime.ClientRenamed -= value;
     }
 
     public Task Disconnect(string connectionId, string? reason = null)

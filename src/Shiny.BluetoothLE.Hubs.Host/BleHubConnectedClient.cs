@@ -20,7 +20,10 @@ public sealed class BleHubConnectedClient
     /// The connection id - the platform's identifier for the central
     /// </summary>
     public string Id { get; }
-    public string? Name { get; }
+    /// <summary>
+    /// The name the client gave in its handshake, or its latest rename
+    /// </summary>
+    public string? Name { get; internal set; }
     public string? AppVersion { get; }
     public IReadOnlyDictionary<string, string> Properties { get; }
     public int Mtu { get; }

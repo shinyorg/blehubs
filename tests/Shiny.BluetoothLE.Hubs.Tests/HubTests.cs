@@ -436,4 +436,92 @@ public class HubTests : IAsyncLifetime
         var ex = await Assert.ThrowsAsync<BleHubException>(() => this.ConnectExisting("peer-1", "mallory"));
         Assert.Contains("Not you", ex.Message);
     }
+
+
+    [Fact]
+    public async Task RenameGivesTheClientANewNameWithoutReconnecting()
+    {
+        var hub = await this.Connect();
+        var client = this.clients["peer-1"];
+        BleHubClientRenamedEventArgs? renamed = null;
+        this.runtime.ClientRenamed += (_, e) => renamed = e;
+
+        Assert.Equal("Alice", client.ClientName);
+        await client.Rename("Alicia");
+
+        Assert.Equal("Alicia", client.ClientName);
+        Assert.Equal("Alicia", await hub.WhoAmI());
+        Assert.Contains("renamed:Alice->Alicia", this.log.Entries);
+        Assert.NotNull(renamed);
+        Assert.Equal("Alice", renamed!.PreviousName);
+        Assert.Equal("Alicia", renamed.Client.Name);
+        Assert.Equal(BleHubClientStatus.Connected, client.Status);
+        Assert.DoesNotContain(this.log.Entries, x => x.StartsWith("disconnected:"));
+    }
+
+
+    [Fact]
+    public async Task RenameToTheSameNameIsANoOp()
+    {
+        await this.Connect();
+        await this.clients["peer-1"].Rename("Alice");
+        Assert.DoesNotContain(this.log.Entries, x => x.StartsWith("renamed:"));
+    }
+
+
+    [Fact]
+    public async Task ValidateClientCanRefuseARename()
+    {
+        this.hubOptions.ValidateClient = info => info.Name == "mallory" ? "Not you" : null;
+        var hub = await this.Connect();
+        var client = this.clients["peer-1"];
+
+        var ex = await Assert.ThrowsAsync<BleHubRemoteException>(() => client.Rename("mallory"));
+        Assert.Equal(BleHubRemoteException.RenameRefused, ex.RemoteErrorType);
+        Assert.Equal("Not you", ex.Message);
+        Assert.Equal("Alice", client.ClientName);
+        Assert.Equal("Alice", await hub.WhoAmI());
+    }
+
+
+    [Fact]
+    public async Task OnRenamedThrowingRefusesTheRenameAndKeepsTheOldName()
+    {
+        var hub = await this.Connect();
+        var client = this.clients["peer-1"];
+
+        var ex = await Assert.ThrowsAsync<BleHubRemoteException>(() => client.Rename("Boom"));
+        Assert.Equal(BleHubRemoteException.RenameRefused, ex.RemoteErrorType);
+        Assert.Equal("Not that name", ex.Message);
+        Assert.Equal("Alice", await hub.WhoAmI());
+    }
+
+
+    [Fact]
+    public async Task RenameNeedsAConnection()
+    {
+        this.CreateProxy("peer-1");
+        await Assert.ThrowsAsync<BleHubDisconnectedException>(() => this.clients["peer-1"].Rename("x"));
+    }
+
+
+    [Fact]
+    public async Task HostRenameReachesEveryClientInOrderWithPushes()
+    {
+        var hub = await this.Connect();
+        await this.Connect("peer-2", "Bob");
+        var client = this.clients["peer-1"];
+        var seen = new List<string>();
+        hub.Numbered += (_, i) => { lock (seen) seen.Add($"n{i}"); };
+        client.HostRenamed += (_, name) => { lock (seen) seen.Add($"host:{name}"); };
+
+        await hub.PushSequence(2);
+        await this.runtime.SetHostName("NewHost", CancellationToken.None);
+        await hub.PushSequence(2);
+
+        await WaitFor(() => { lock (seen) return seen.Count == 5; });
+        Assert.Equal(["n0", "n1", "host:NewHost", "n0", "n1"], seen);
+        Assert.Equal("NewHost", client.HostName);
+        await WaitFor(() => this.clients["peer-2"].HostName == "NewHost");
+    }
 }

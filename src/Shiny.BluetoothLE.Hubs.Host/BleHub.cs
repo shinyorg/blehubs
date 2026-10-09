@@ -36,6 +36,13 @@ public abstract class BleHub<TContract> : IBleHubInternal where TContract : clas
     /// </summary>
     public virtual Task OnDisconnectedAsync(HubDisconnect disconnect) => this.OnDisconnectedAsync(disconnect.Description);
 
+    /// <summary>
+    /// Runs when a connected client renames itself, after ValidateClient accepted the new name and before the client is
+    /// told. <see cref="BleHubCallerContext.Client"/> already has the new name. Throw to refuse the rename - the name is put
+    /// back and the client gets the exception's message.
+    /// </summary>
+    public virtual Task OnRenamedAsync(string? previousName) => Task.CompletedTask;
+
 
     void IBleHubInternal.Initialize(BleHubCallerContext context, HubRuntime runtime)
     {
@@ -51,6 +58,7 @@ internal interface IBleHubInternal
     void Initialize(BleHubCallerContext context, HubRuntime runtime);
     Task OnConnectedAsync();
     Task OnDisconnectedAsync(HubDisconnect disconnect);
+    Task OnRenamedAsync(string? previousName);
 }
 
 

@@ -74,6 +74,21 @@ services.AddBleHubClient<IGameHub>(ServiceUuid, CharacteristicUuid);   // inject
   - `ConnectionFailed`: a connect or handshake failed. No `Disconnected` event is raised, because the client never connected.
 
   On the host, override `OnDisconnectedAsync(HubDisconnect)` or read `ClientDisconnected`'s `e.Disconnect`. On the client, `Disconnected` is an `EventHandler<HubDisconnect>`, and `StatusChanged` and `BleHubDisconnectedException` carry it as `Disconnect`. `Description` (and the `Reason` string properties) give the message, or a default text for the reason. Existing `OnDisconnectedAsync(string? reason)` overrides keep working.
+- **Renaming without reconnecting**:
+  - Client: `await client.Rename("Allan B")` changes the name the host knows it by. The host runs `ValidateClient` with the new name, then the hub's `OnRenamedAsync(previousName)`. Either can refuse, which throws `BleHubRemoteException` with `RemoteErrorType == BleHubRemoteException.RenameRefused` and leaves the name unchanged. `ClientName` is the current name.
+  - Host: `BleHubConnectedClient.Name` follows renames, and `IHubContext<THub>.ClientRenamed` is raised. Telling other clients is up to the hub, for example `Clients.Others.PlayerRenamed(previousName, Context.Client.Name)` in `OnRenamedAsync`.
+  - `IBleHubHost.Rename("TTT 2")` changes the host's name without stopping anything. It re-advertises under the new name, and every connected client's `HostName` updates and `HostRenamed` is raised, in order with hub events. While stopped, it sets the name for the next `Start`.
+  - Older hosts refuse a client's rename with a `BleHubRemoteException`. Older clients ignore a host rename and keep the handshake's name.
+
+  ```csharp
+  // hub
+  public override Task OnRenamedAsync(string? previousName)
+      => this.Clients.Others.PlayerRenamed(previousName, this.Context.Client.Name);   // throw to refuse
+
+  // client
+  client.HostRenamed += (_, name) => ...;                                            // client.HostName is already updated
+  await client.Rename("Allan B");
+  ```
 - **Multiple hubs**: each hub needs its own characteristic. Sharing one service UUID is recommended so the advertisement holds only one 128-bit UUID. Hub clients on the same device share one BLE connection.
 
 - **Over Wi-Fi too**: [Shiny.SwitchboardR](https://github.com/shinyorg/switchboardr) serves the same hubs over Wi-Fi (with mDNS discovery) alongside BLE, and lets clients connect over whichever transport is available, with no change to hub or contract code. It builds on hidden transport seams in this library (`IHubContext<THub>.TransportEndpoint`, `BleHubClient.ConnectExternal`).
@@ -87,6 +102,7 @@ See [PLAN.md](PLAN.md) for the wire protocol, the design decisions and the roadm
 - One phone taps **Host a game** and plays X.
 - The next phone to tap **Join a game** plays O. Later phones join the `spectators` group.
 - Moves are hub calls, and board updates and emotes are hub pushes.
+- Players and spectators can chat. The host stamps each line with the sender and pushes it to everyone.
 - Avatars are uploaded and downloaded over L2CAP.
 
 BLE needs two physical devices: simulators and emulators have no usable Bluetooth.

@@ -19,6 +19,11 @@ public interface IBleHubPeerChannel
     /// The hub is ending this client's session - tell the client why, then drop it
     /// </summary>
     Task Disconnect(HubDisconnect disconnect, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The host has a new name - tell the client. Called in order with <see cref="Push"/>.
+    /// </summary>
+    Task HostRenamed(string? hostName, CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
 
@@ -67,6 +72,13 @@ public interface IBleHubTransportEndpoint
     /// The client is gone (it left, or its connection was lost) - runs OnDisconnectedAsync and removes it from its groups
     /// </summary>
     void Disconnected(string connectionId, HubDisconnect disconnect);
+
+    /// <summary>
+    /// The client renamed itself: runs ValidateClient with the new name, then OnRenamedAsync. Returns null when renamed,
+    /// otherwise why it was refused - relay it to the client as a <see cref="BleHubRemoteException"/> of type
+    /// <see cref="BleHubRemoteException.RenameRefused"/>.
+    /// </summary>
+    Task<string?> Rename(string connectionId, string? name, CancellationToken cancellationToken);
 
     /// <summary>
     /// Ends a client's session through its channel, then forgets it

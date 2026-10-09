@@ -286,6 +286,51 @@ public class ExternalTransportTests : IAsyncLifetime
     /// <summary>
     /// Both halves of a transport in one object: the client's IBleHubClientTransport and the hub's IBleHubPeerChannel
     /// </summary>
+    [Fact]
+    public async Task RenameGoesThroughTheTransportAndOtherClientsSeeIt()
+    {
+        var (_, client, _) = await this.Connect("wifi-1", "Alice");
+        var ble = await this.ConnectBle("ble-1", "Bob");
+        BleHubClientRenamedEventArgs? renamed = null;
+        this.runtime.ClientRenamed += (_, e) => renamed = e;
+
+        await client.Rename("Alicia");
+
+        Assert.Equal("Alicia", client.ClientName);
+        Assert.Equal("Alicia", this.runtime.FindClient("wifi-1")!.Name);
+        Assert.Equal("Alice", renamed?.PreviousName);
+        Assert.Contains("renamed:Alice->Alicia", this.log.Entries);
+        Assert.Equal("Bob", await ble.WhoAmI());
+    }
+
+
+    [Fact]
+    public async Task RefusedRenameComesBackThroughTheTransport()
+    {
+        this.hubOptions.ValidateClient = info => info.Name == "mallory" ? "Not you" : null;
+        var (hub, client, _) = await this.Connect();
+
+        var ex = await Assert.ThrowsAsync<BleHubRemoteException>(() => client.Rename("mallory"));
+        Assert.Equal(BleHubRemoteException.RenameRefused, ex.RemoteErrorType);
+        Assert.Equal("Alice", await hub.WhoAmI());
+    }
+
+
+    [Fact]
+    public async Task HostRenameReachesClientsOnBothTransports()
+    {
+        var (_, wifi, _) = await this.Connect();
+        var ble = (BleHubClient)(object)await this.ConnectBle("ble-1", "Bob");
+        string? wifiSaw = null;
+        wifi.HostRenamed += (_, name) => wifiSaw = name;
+
+        await this.runtime.SetHostName("NewHost", CancellationToken.None);
+
+        await WaitFor(() => wifiSaw == "NewHost" && ble.HostName == "NewHost");
+        Assert.Equal("NewHost", wifi.HostName);
+    }
+
+
     sealed class MemoryTransport(HubRuntime runtime, string connectionId, IBleHubClientTransportEvents events)
         : IBleHubClientTransport, IBleHubPeerChannel
     {
@@ -372,6 +417,19 @@ public class ExternalTransportTests : IAsyncLifetime
         {
             events.Closed(disconnect);
             return Task.CompletedTask;
+        }
+
+        Task IBleHubPeerChannel.HostRenamed(string? hostName, CancellationToken cancellationToken)
+        {
+            events.HostRenamed(hostName);
+            return Task.CompletedTask;
+        }
+
+
+        public async Task Rename(string? name, CancellationToken cancellationToken)
+        {
+            if (await runtime.Rename(connectionId, name, cancellationToken) is { } rejection)
+                throw new BleHubRemoteException(BleHubRemoteException.RenameRefused, rejection);
         }
     }
 }

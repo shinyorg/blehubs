@@ -23,7 +23,7 @@ internal sealed class HubClientProtocol(
     public int Mtu { get; set; } = 23;
 
     /// <summary>
-    /// A push from the host, in the order received
+    /// A push or a host rename from the host, in the order received
     /// </summary>
     public event Action<BleHubMessage>? Pushed;
 
@@ -56,6 +56,7 @@ internal sealed class HubClientProtocol(
         switch (message.Kind)
         {
             case FrameKind.Push:
+            case FrameKind.HostRenamed:
                 this.Pushed?.Invoke(message);
                 break;
 
@@ -99,6 +100,14 @@ internal sealed class HubClientProtocol(
     {
         var reply = await this.Call(FrameKind.Invoke, method, arguments, cancellationToken).ConfigureAwait(false);
         return reply.Kind == FrameKind.Completion ? reply.Payload : throw Unexpected(reply);
+    }
+
+
+    public async Task Rename(string? name, CancellationToken cancellationToken)
+    {
+        var reply = await this.Call(FrameKind.Rename, null, ProtocolSerializer.Serialize(new RenameInfo(name)), cancellationToken).ConfigureAwait(false);
+        if (reply.Kind != FrameKind.Completion)
+            throw Unexpected(reply);
     }
 
 

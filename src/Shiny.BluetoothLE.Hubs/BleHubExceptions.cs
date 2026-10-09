@@ -24,6 +24,11 @@ public class BleHubProtocolException(string message, ushort? messageId = null) :
 /// </summary>
 public class BleHubRemoteException(string remoteErrorType, string message) : BleHubException(message)
 {
+    /// <summary>
+    /// The <see cref="RemoteErrorType"/> of a rename the host refused (ValidateClient or OnRenamedAsync) - the message says why
+    /// </summary>
+    public const string RenameRefused = "HubRenameRefused";
+
     public string RemoteErrorType { get; } = remoteErrorType;
 }
 

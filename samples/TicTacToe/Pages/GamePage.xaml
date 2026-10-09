@@ -6,7 +6,11 @@
              x:DataType="local:GameViewModel"
              Title="{Binding Role}">
 
-    <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" Padding="16" RowSpacing="16">
+    <!-- the bottom edge pads for the keyboard so the chat entry stays visible -->
+    <Grid RowDefinitions="Auto,Auto,*,Auto,Auto"
+          Padding="16"
+          RowSpacing="16"
+          SafeAreaEdges="Container, Container, Container, SoftInput">
 
         <!-- players -->
         <Grid ColumnDefinitions="*,Auto,*">
@@ -89,7 +93,69 @@
             </Border>
         </Grid>
 
+        <!-- chat - covers the board and emotes while open -->
+        <Grid Grid.Row="2"
+              Grid.RowSpan="2"
+              RowDefinitions="*,Auto"
+              RowSpacing="8"
+              IsVisible="{Binding IsChatOpen}"
+              BackgroundColor="{AppThemeBinding Light={StaticResource White}, Dark={StaticResource OffBlack}}">
+            <CollectionView ItemsSource="{Binding Chat}"
+                            ItemsUpdatingScrollMode="KeepLastItemInView">
+                <CollectionView.EmptyView>
+                    <Label Text="No messages yet - say hi 👋"
+                           HorizontalOptions="Center"
+                           VerticalOptions="Center"
+                           TextColor="{AppThemeBinding Light={StaticResource Gray500}, Dark={StaticResource Gray400}}" />
+                </CollectionView.EmptyView>
+                <CollectionView.ItemTemplate>
+                    <DataTemplate x:DataType="local:ChatLineViewModel">
+                        <Border Style="{StaticResource ChatBubble}">
+                            <Border.Triggers>
+                                <DataTrigger TargetType="Border" Binding="{Binding IsMine}" Value="True">
+                                    <Setter Property="HorizontalOptions" Value="End" />
+                                    <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}" />
+                                </DataTrigger>
+                            </Border.Triggers>
+                            <VerticalStackLayout Spacing="2">
+                                <Label FontSize="12">
+                                    <Label.FormattedText>
+                                        <FormattedString>
+                                            <Span Text="{Binding From}" TextColor="{Binding NameColor}" FontAttributes="Bold" />
+                                            <Span Text="  " />
+                                            <Span Text="{Binding Time}" TextColor="{AppThemeBinding Light={StaticResource Gray500}, Dark={StaticResource Gray400}}" />
+                                        </FormattedString>
+                                    </Label.FormattedText>
+                                </Label>
+                                <Label Text="{Binding Text}">
+                                    <Label.Triggers>
+                                        <DataTrigger TargetType="Label" Binding="{Binding IsMine}" Value="True">
+                                            <Setter Property="TextColor" Value="White" />
+                                        </DataTrigger>
+                                    </Label.Triggers>
+                                </Label>
+                            </VerticalStackLayout>
+                        </Border>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
+
+            <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <Entry Text="{Binding ChatText}"
+                       Placeholder="Message"
+                       MaxLength="{Binding MaxChatLength}"
+                       ReturnType="Send"
+                       ReturnCommand="{Binding SendChatCommand}" />
+                <Button Grid.Column="1"
+                        Text="Send"
+                        Command="{Binding SendChatCommand}" />
+            </Grid>
+        </Grid>
+
         <VerticalStackLayout Grid.Row="4" Spacing="8">
+            <Button Text="{Binding ChatButtonText}"
+                    Command="{Binding ToggleChatCommand}"
+                    Style="{StaticResource SecondaryButton}" />
             <Button Text="Rematch"
                     Command="{Binding RematchCommand}"
                     IsVisible="{Binding CanRematch}" />

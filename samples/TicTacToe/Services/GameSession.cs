@@ -13,6 +13,7 @@ namespace TicTacToe.Services;
 public class GameSession
 {
     public const string HostAvatarFile = "avatar-host.jpg";
+    public const int MaxChatLength = 200;
 
     readonly BleHubHostOptions hostOptions;
     readonly IHubContext<GameHub> hub;
@@ -42,6 +43,7 @@ public class GameSession
             this.StateChanged?.Invoke(this, state);
         };
         client.Hub.Emote += (from, emoji) => this.EmoteReceived?.Invoke(this, (from, emoji));
+        client.Hub.ChatReceived += msg => this.ChatReceived?.Invoke(this, msg);
         client.Disconnected += (_, reason) =>
         {
             if (!this.IsHost && this.IsActive)
@@ -56,10 +58,12 @@ public class GameSession
     public bool IsActive { get; private set; }
     public bool IsHost { get; private set; }
     public Mark MyMark { get; private set; }
+    public string? MyName { get; private set; }
     public GameState? State { get; private set; }
 
     public event EventHandler<GameState>? StateChanged;
     public event EventHandler<(string From, string Emoji)>? EmoteReceived;
+    public event EventHandler<ChatMessage>? ChatReceived;
 
     /// <summary>
     /// A client's session ended - the host left, removed us or the connection dropped
@@ -94,6 +98,7 @@ public class GameSession
         this.IsHost = true;
         this.IsActive = true;
         this.MyMark = Mark.X;
+        this.MyName = playerName;
         this.State = this.engine.Snapshot();
     }
 
@@ -118,6 +123,24 @@ public class GameSession
 
 
     public void ShowEmoteLocally(string from, string emoji) => this.EmoteReceived?.Invoke(this, (from, emoji));
+
+
+    /// <summary>
+    /// Host only - the host stamps and trims every line so clients can't spoof the sender or flood the board
+    /// </summary>
+    public async Task BroadcastChat(string from, Mark mark, string text)
+    {
+        text = text.Trim();
+        if (text.Length == 0)
+            throw new ArgumentException("Message is empty");
+
+        if (text.Length > MaxChatLength)
+            text = text[..MaxChatLength];
+
+        var msg = new ChatMessage(from, mark, text, DateTimeOffset.UtcNow);
+        this.ChatReceived?.Invoke(this, msg);
+        await this.hub.Clients.All.ChatReceived(msg);
+    }
 
 
     /// <summary>
@@ -162,6 +185,7 @@ public class GameSession
             this.IsHost = false;
             this.IsActive = true;
             this.MyMark = result.YouAre;
+            this.MyName = playerName;
             this.State = result.State;
         }
         catch
@@ -202,6 +226,11 @@ public class GameSession
     public Task Emote(string emoji) => this.IsHost
         ? this.BroadcastEmote(this.engine.Snapshot().XPlayer, emoji)
         : this.client.Hub.SendEmote(emoji);
+
+
+    public Task Chat(string text) => this.IsHost
+        ? this.BroadcastChat(this.engine.Snapshot().XPlayer, Mark.X, text)
+        : this.client.Hub.SendChat(text);
 
 
     public async Task Leave()
