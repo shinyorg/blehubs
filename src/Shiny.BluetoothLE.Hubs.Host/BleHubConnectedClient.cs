@@ -24,6 +24,11 @@ public sealed class BleHubConnectedClient
     public string? AppVersion { get; }
     public IReadOnlyDictionary<string, string> Properties { get; }
     public int Mtu { get; }
+
+    /// <summary>
+    /// The BLE central this client is connected through - null when it is connected over another transport
+    /// </summary>
+    public Shiny.BluetoothLE.Hosting.IPeripheral? Peripheral { get; internal init; }
     public DateTimeOffset ConnectedAt { get; } = DateTimeOffset.UtcNow;
 
     /// <summary>

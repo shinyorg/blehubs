@@ -31,8 +31,10 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         this.protocol.Pushed += message => this.connection?.Pushes.Writer.TryWrite(message);
         this.protocol.DisconnectRequested += info =>
         {
-            this.logger?.LogInformation("Host ended the session: {Reason}", info.Reason);
-            _ = this.Teardown(info.Reason ?? "Disconnected by host", true);
+            // hosts older than the reason code only ever sent a Disconnect to remove one client
+            var disconnect = info.ToDisconnect(HubDisconnectReason.ServerDisconnect);
+            this.logger?.LogInformation("Host ended the session: {Reason}", disconnect);
+            _ = this.Teardown(disconnect, true);
         };
     }
 
@@ -57,7 +59,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
 
     public event EventHandler<BleHubStatusChangedEventArgs>? StatusChanged;
     public event EventHandler? Connected;
-    public event EventHandler<string?>? Disconnected;
+    public event EventHandler<HubDisconnect>? Disconnected;
 
 
     public IObservable<BleHubHostInfo> Discover()
@@ -117,14 +119,14 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
             conn.Subscriptions.Add(p
                 .WhenStatusChanged()
                 .Where(x => x == ConnectionState.Disconnected)
-                .Subscribe(__ => { _ = this.Teardown("Connection lost", false); }));
+                .Subscribe(__ => { _ = this.Teardown(new HubDisconnect(HubDisconnectReason.ClientTimeout), false); }));
 
             conn.Write = (frame, ct) => p.WriteCharacteristicAsync(this.ServiceUuid, this.CharacteristicUuid, frame, true, ct, 10000);
             await this.Complete(conn, p.Mtu, options, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            await this.Teardown(ex.Message, true).ConfigureAwait(false);
+            await this.Teardown(new HubDisconnect(HubDisconnectReason.ConnectionFailed, ex.Message), true).ConfigureAwait(false);
             throw;
         }
         finally
@@ -149,7 +151,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         }
         catch (Exception ex)
         {
-            await this.Teardown(ex.Message, false).ConfigureAwait(false);
+            await this.Teardown(new HubDisconnect(HubDisconnectReason.ConnectionFailed, ex.Message), false).ConfigureAwait(false);
             throw;
         }
         finally
@@ -183,7 +185,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         }
         catch (Exception ex)
         {
-            await this.Teardown(ex.Message, true).ConfigureAwait(false);
+            await this.Teardown(new HubDisconnect(HubDisconnectReason.ConnectionFailed, ex.Message), true).ConfigureAwait(false);
             throw;
         }
         finally
@@ -198,10 +200,29 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     /// <summary>
     /// Simulates the link dropping (tests)
     /// </summary>
-    internal Task LoseConnection(string reason) => this.Teardown(reason, false);
+    internal Task LoseConnection(string reason) => this.Teardown(new HubDisconnect(HubDisconnectReason.ClientTimeout, reason), false);
 
 
-    public Task Disconnect() => this.Teardown("Disconnected", true);
+    public async Task Disconnect()
+    {
+        var disconnect = new HubDisconnect(HubDisconnectReason.ClientDisconnect);
+
+        // over BLE, say goodbye first so the host doesn't take the unsubscribe that follows for a dropped link
+        // (another transport tells its host itself when it closes)
+        if (this.Status == BleHubClientStatus.Connected && this.connection is { External: null, Write: not null })
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                await this.protocol.SendDisconnect(disconnect, cts.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                this.logger?.LogDebug(ex, "Could not tell the host we are leaving");
+            }
+        }
+        await this.Teardown(disconnect, true).ConfigureAwait(false);
+    }
 
 
     public async Task<L2CapTransferResult> UploadFile(string localFilePath, string? remoteFileName = null, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default)
@@ -254,7 +275,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     }
 
 
-    public void Dispose() => _ = this.Teardown("Disposed", true);
+    public void Dispose() => _ = this.Teardown(new HubDisconnect(HubDisconnectReason.ClientDisconnect, "Disposed"), true);
 
 
     // ---- used by generated proxies ----
@@ -422,7 +443,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     }
 
 
-    async Task Teardown(string reason, bool cancelConnection)
+    async Task Teardown(HubDisconnect disconnect, bool cancelConnection)
     {
         // connection loss, host disconnect and app disconnect can race - only the first one tears down
         var conn = Interlocked.Exchange(ref this.connection, null);
@@ -430,13 +451,13 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
             return;
 
         var wasConnected = this.Status == BleHubClientStatus.Connected;
-        this.SetStatus(BleHubClientStatus.Disconnecting, reason);
+        this.SetStatus(BleHubClientStatus.Disconnecting, disconnect);
         foreach (var sub in conn.Subscriptions)
             sub.Dispose();
 
         conn.Pushes.Writer.TryComplete();
-        this.protocol.FailAll(new BleHubDisconnectedException("The connection to the host was closed", reason));
-        conn.CloseReason = reason;
+        this.protocol.FailAll(new BleHubDisconnectedException("The connection to the host was closed", disconnect));
+        conn.CloseReason = disconnect;
         conn.Lifetime.Cancel();
 
         if (conn.External != null && cancelConnection)
@@ -466,9 +487,9 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
             }
         }
 
-        this.SetStatus(BleHubClientStatus.Disconnected, reason);
+        this.SetStatus(BleHubClientStatus.Disconnected, disconnect);
         if (wasConnected)
-            this.Disconnected?.Invoke(this, reason);
+            this.Disconnected?.Invoke(this, disconnect);
     }
 
 
@@ -521,13 +542,13 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     }
 
 
-    void SetStatus(BleHubClientStatus status, string? reason)
+    void SetStatus(BleHubClientStatus status, HubDisconnect? disconnect)
     {
         if (this.Status == status)
             return;
 
         this.Status = status;
-        this.StatusChanged?.Invoke(this, new BleHubStatusChangedEventArgs(status, reason));
+        this.StatusChanged?.Invoke(this, new BleHubStatusChangedEventArgs(status, disconnect));
     }
 
 
@@ -540,11 +561,11 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         public void Pushed(string eventName, ReadOnlyMemory<byte> arguments)
             => conn.Pushes.Writer.TryWrite(new BleHubMessage(FrameKind.Push, 0, eventName, arguments));
 
-        public void Closed(string? reason)
+        public void Closed(HubDisconnect disconnect)
         {
             // only the connection this transport was created for - a late close from an old transport must not end a new one
             if (ReferenceEquals(client.connection, conn))
-                _ = client.Teardown(reason ?? "Connection lost", false);
+                _ = client.Teardown(disconnect, false);
         }
     }
 
@@ -557,7 +578,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         public Func<byte[], CancellationToken, Task>? Write { get; set; }
         public IBleHubClientTransport? External { get; set; }
         public CancellationTokenSource Lifetime { get; } = new();
-        public string? CloseReason { get; set; }
+        public HubDisconnect? CloseReason { get; set; }
         public List<IDisposable> Subscriptions { get; } = new();
         public Channel<BleHubMessage> Pushes { get; } = Channel.CreateUnbounded<BleHubMessage>(new UnboundedChannelOptions { SingleReader = true });
     }

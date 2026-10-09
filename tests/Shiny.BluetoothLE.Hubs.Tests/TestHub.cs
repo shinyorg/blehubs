@@ -55,9 +55,10 @@ public class TestHub(HubLog log) : BleHub<ITestHub>
         return this.Groups.AddToGroupAsync(this.Context.ConnectionId, "everyone");
     }
 
-    public override Task OnDisconnectedAsync(string? reason)
+    public override Task OnDisconnectedAsync(HubDisconnect disconnect)
     {
-        log.Add($"disconnected:{this.Context.Client.Name}:{reason}");
+        log.Add($"disconnected:{this.Context.Client.Name}:{disconnect.Description}");
+        log.Add($"reason:{this.Context.Client.Name}:{disconnect.Reason}");
         return Task.CompletedTask;
     }
 

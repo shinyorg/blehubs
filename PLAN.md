@@ -41,7 +41,7 @@ services.ConfigureBleHubHost(o => { o.LocalName = "TTT"; o.EnableFileTransfers(d
 public class GameHub(GameEngine engine) : BleHub<IGameHub>
 {
     public override Task OnConnectedAsync() => Groups.AddToGroupAsync(Context.ConnectionId, "lobby");
-    public override Task OnDisconnectedAsync(string? reason) => ...;
+    public override Task OnDisconnectedAsync(HubDisconnect disconnect) => ...;   // or OnDisconnectedAsync(string? reason)
 
     public async Task<MoveResult> MakeMove(int cell)
     {
@@ -69,7 +69,7 @@ services.AddBleHubClient<IGameHub>("<service uuid>", "<characteristic uuid>");
 public class GameViewModel(IBleHubClient<IGameHub> client)  // or the generated GameHubClient, or IGameHub
 {
     client.Hub.StateChanged += state => ...;
-    client.Connected += ...; client.Disconnected += (_, reason) => ...;
+    client.Connected += ...; client.Disconnected += (_, disconnect) => ...;   // HubDisconnect
 
     client.Discover().Subscribe(host => ...);
     await client.Connect(host, new BleHubConnectOptions("Allan"));
@@ -121,9 +121,21 @@ The body is `[name length:1][name utf8][payload]`. Frames are reassembled per (p
 | 0x23 | StreamEnd | H→C | – | – |
 | 0x24 | Error | H→C | – | `RemoteError` (type, message) |
 | 0x30 | Push | H→C | event | arguments |
-| 0x40 | Disconnect | H→C | – | `DisconnectInfo` (reason) |
+| 0x40 | Disconnect | H→C, C→H | – | `DisconnectInfo` (reason, kind) |
 
 **Arguments**: `[count:1]` followed by `count × ([length:4][serialized value])`. Each value is serialized with its static type through `IBleHubSerializer`, which keeps it AOT-safe.
+
+**Disconnect**: `DisconnectInfo` is `{ Reason, Kind }`. `Reason` is the optional message and `Kind` is the
+`HubDisconnectReason` as a number (`ClientDisconnect` 0, `ClientTimeout` 1, `ServerDisconnect` 2, `ServerShutdown` 3,
+`ConnectionFailed` 4). These values travel on the wire, so they are never renumbered. `Kind` is additive JSON, so the
+protocol version stays at 1.
+- **Host → client**: the host is ending the session (`ServerDisconnect` or `ServerShutdown`). A frame with no `Kind`, from
+  an older host, is treated as `ServerDisconnect`.
+- **Client → host**: the client is leaving (`ClientDisconnect`). Over BLE the client sends it before it unsubscribes. The
+  host handles it inline in the GATT write, so the unsubscribe that follows finds the client already gone instead of
+  reporting a timeout. An unsubscribe with no goodbye is a `ClientTimeout`, because iOS and Android both report a
+  dropped central as an unsubscribe. An older host answers this frame with an `Error` frame, which the leaving client
+  ignores, and still sees the unsubscribe.
 
 **Rules**
 - Client message ids are 1..0x7FFF. Host-allocated ids (pushes, disconnect) have the high bit set.
@@ -180,7 +192,7 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
   - `Context`: `ConnectionId`, `Client` (name, app version, properties, `Items`, MTU), `Abort(reason)`, and `ConnectionAborted`
   - `Clients`: `All`, `Others`, `Caller`, `Client(id)`, `Clients(ids)`, `AllExcept(ids)`, `Group(name)`, `Groups(names)`, `GroupExcept(name, ids)`, `OthersInGroup(name)`
   - `Groups`: `AddToGroupAsync` / `RemoveFromGroupAsync`
-  - `OnConnectedAsync` / `OnDisconnectedAsync(reason)`
+  - `OnConnectedAsync` / `OnDisconnectedAsync(HubDisconnect)`. By default the latter calls `OnDisconnectedAsync(string? reason)` with `disconnect.Description`, so either override works.
 - **`IHubContext<THub>`**:
   - `Start()` / `Stop(reason)` / `IsRunning`
   - `Clients`, through the generated extension property
@@ -188,6 +200,12 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
   - `ConnectedClients`
   - `Disconnect(connectionId, reason)`
 - **Disconnect is cooperative.** iOS `CBPeripheralManager` can't drop a central, so the host sends `Disconnect` and forgets the client. The client library disconnects itself when it receives it.
+- **Disconnect reasons**: every departure is a `HubDisconnect(Reason, Message)`. `Description` is the message, or a default text for the reason.
+  - `ClientDisconnect`: the client sent a `Disconnect` frame (it called `Disconnect()` or was disposed).
+  - `ClientTimeout`: an unsubscribe without that frame (message "Unsubscribed"), or the cleanup sweep.
+  - `ServerDisconnect`: `Context.Abort(reason)` or `IHubContext.Disconnect(id, reason)`.
+  - `ServerShutdown`: `IBleHubHost.Stop(reason)`, or `IHubContext.Stop(reason)` (default message "Hub stopped").
+  - `ClientDisconnected` raises `BleHubClientDisconnectedEventArgs(Client, Disconnect)`. Its `Reason` string is `Disconnect.Description`.
 - **Client options**: `MaxClients` and `ValidateClient` (return a rejection reason) are set per hub through `AddBleHub(..., o => ...)`.
 - **Cleanup**: a peer that unsubscribes is removed right away. A periodic sweep also removes peers that no longer appear in `SubscribedCentrals`, because Android doesn't always report the unsubscribe.
 
@@ -210,7 +228,12 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
   - A per-call timeout comes from `BleHubProtocolOptions.RequestTimeout`. Streams have no overall timeout.
   - A `CancellationToken` sends `Cancel` to the host.
   - A host exception becomes `BleHubRemoteException`.
-  - A dropped connection fails every pending call with `BleHubDisconnectedException`.
+  - A dropped connection fails every pending call with `BleHubDisconnectedException`, whose `Disconnect` says why.
+- **Disconnect reasons**: `Disconnected` is an `EventHandler<HubDisconnect>`, and `BleHubStatusChangedEventArgs(Status, Disconnect)` carries it for `Disconnecting` and `Disconnected`. Both expose a computed `Reason` string.
+  - `ClientDisconnect`: `Disconnect()` or `Dispose()`. Over BLE, `Disconnect()` first sends a `Disconnect` frame (2 s timeout, errors ignored).
+  - `ClientTimeout`: the BLE link dropped.
+  - `ServerDisconnect` / `ServerShutdown`: from the host's `Disconnect` frame.
+  - `ConnectionFailed`: a connect or handshake failed. `Disconnected` isn't raised, because the client never connected.
 - Pushes are raised on a background thread. UI code marshals them to the main thread.
 
 ## 6a. File transfer (L2CAP)
@@ -272,6 +295,7 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
 | Serialization | Pluggable `IBleHubSerializer`. The default is Shiny's AOT JSON, using contexts registered with `Json.AddContext` |
 | Background | Foreground only |
 | Auth / security | None in v1, apart from opt-in exposure and the `ValidateClient` handshake hook |
+| Disconnect reasons | Typed `HubDisconnectReason` + optional message, on both sides (2026-10-08). The client says goodbye with a `Disconnect` frame so the host can tell leaving from a dropped link. Additive JSON, protocol version stays 1 |
 | Other transports (§13) | Hidden host and client seams in this repo. Wi-Fi itself (Switchboard, mDNS, transport choice) lives in Shiny.SwitchboardR, its own repo, which references this one through NuGet |
 
 ## 10. Status
@@ -284,6 +308,9 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
   - Per-hub start/stop added. A fake `IBleHostingManager` now tests `BleHubHost` itself: GATT writes and notifications, shared and separate services, advertising updates and restarts. 63 tests pass.
   - **Not yet verified:** a real two-device run.
 - **2026-10-08**: transport seams added (§13) for Shiny.SwitchboardR, which serves hubs over Wi-Fi from its own repo. 76 tests pass.
+- **2026-10-08**: typed disconnect reasons (`HubDisconnect`, `HubDisconnectReason`). The client now sends `Disconnect` to the host before unsubscribing, and `DisconnectInfo` gained `Kind`. **Breaking API**: `IBleHubConnection.Disconnected` is `EventHandler<HubDisconnect>`, and `BleHubClientDisconnectedEventArgs`, `BleHubStatusChangedEventArgs` and `BleHubDisconnectedException` carry a `HubDisconnect`. The wire stays compatible. 82 tests pass.
+- **2026-10-08**: `BleHubConnectedClient.Peripheral`, the central a BLE client is connected through. It is null for clients on another transport, and Shiny.SwitchboardR exposes it as `HubConnection.Ble`. 83 tests pass.
+  - **Not yet verified:** that a real iOS and Android host each see the goodbye before the unsubscribe.
 
 ## 11. Future
 
@@ -307,3 +334,11 @@ The libraries target `net10.0` and reference only the Shiny abstractions. The ap
 Hidden seams let another package carry hubs over something other than BLE: `IHubContext<THub>.TransportEndpoint` on the
 host and `BleHubClient.ConnectExternal` on the client. Their design, and the Wi-Fi transport built on them, live in
 **Shiny.SwitchboardR**'s PLAN.md (`~/Desktop/dev/SwitchboardR`, §2).
+
+The seams carry a `HubDisconnect`, so a transport reports why a client left:
+- host: `IBleHubPeerChannel.Disconnect(HubDisconnect, ct)`, and `IBleHubTransportEndpoint.Disconnected(connectionId, HubDisconnect)` /
+  `Disconnect(connectionId, HubDisconnect)`
+- client: `IBleHubClientTransportEvents.Closed(HubDisconnect)`
+
+A transport sends the `HubDisconnect` to the other side itself. `BleHubClient.Disconnect()` sends the BLE `Disconnect`
+frame only over BLE.

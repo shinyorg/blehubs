@@ -187,6 +187,13 @@ internal sealed class HubClientProtocol(
     }
 
 
+    /// <summary>
+    /// Tells the host the client is leaving, so it isn't mistaken for a dropped link
+    /// </summary>
+    public Task SendDisconnect(HubDisconnect disconnect, CancellationToken cancellationToken)
+        => this.WriteMessage(FrameKind.Disconnect, this.NextId(), null, ProtocolSerializer.Serialize(DisconnectInfo.From(disconnect)), cancellationToken);
+
+
     void SendCancel(ushort id)
     {
         _ = Task.Run(async () =>

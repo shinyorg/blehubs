@@ -127,13 +127,13 @@ public class BleHubHostTests : IAsyncLifetime
 
         var test = await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
         var second = await this.Connect<ISecondHub>(SecondChar, ServiceA, "c2");
-        string? kickedReason = null;
-        ((IBleHubConnection)test).Disconnected += (_, r) => kickedReason = r;
+        HubDisconnect? kicked = null;
+        ((IBleHubConnection)test).Disconnected += (_, d) => kicked = d;
 
         await this.testHub.Stop("maintenance");
 
-        await WaitFor(() => kickedReason != null);
-        Assert.Equal("maintenance", kickedReason);
+        await WaitFor(() => kicked != null);
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ServerShutdown, "maintenance"), kicked);
         Assert.False(this.testHub.IsRunning);
         Assert.True(this.hosting.HasService(ServiceA));
         Assert.Equal([ServiceA], this.hosting.AdvertisedServices);
@@ -190,17 +190,85 @@ public class BleHubHostTests : IAsyncLifetime
 
 
     [Fact]
+    public async Task ClientDisconnectSaysGoodbyeBeforeUnsubscribing()
+    {
+        this.Build(ServiceA);
+        await this.host.Start();
+        var test = await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        BleHubClientDisconnectedEventArgs? left = null;
+        this.testHub.ClientDisconnected += (_, e) => left = e;
+
+        await ((IBleHubConnection)test).Disconnect();
+        // the central's unsubscribe arrives after the goodbye - it must not turn the leave into a timeout
+        await this.hosting.Characteristic(TestChar).Unsubscribe(new FakeCentral("c1"));
+
+        await WaitFor(() => left != null);
+        Assert.Equal(HubDisconnectReason.ClientDisconnect, left!.Disconnect.Reason);
+    }
+
+
+    [Fact]
+    public async Task ConnectedClientsCarryTheirCentral()
+    {
+        this.Build(ServiceA);
+        await this.host.Start();
+        await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+
+        var client = Assert.Single(this.testHub.ConnectedClients);
+        Assert.Equal("c1", client.Peripheral?.Uuid);
+
+        // a client on another transport has no central
+        await this.testHub.TransportEndpoint.Connect("wifi-1", new Protocol.HandshakeInfo(1, "WiFi", null, null), new RecordingChannel(), CancellationToken.None);
+        Assert.Null(this.testHub.ConnectedClients.Single(x => x.Id == "wifi-1").Peripheral);
+    }
+
+
+    [Fact]
+    public async Task UnsubscribeWithoutGoodbyeIsATimeout()
+    {
+        this.Build(ServiceA);
+        await this.host.Start();
+        await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        BleHubClientDisconnectedEventArgs? left = null;
+        this.testHub.ClientDisconnected += (_, e) => left = e;
+
+        await this.hosting.Characteristic(TestChar).Unsubscribe(new FakeCentral("c1"));
+
+        await WaitFor(() => left != null);
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ClientTimeout, "Unsubscribed"), left!.Disconnect);
+    }
+
+
+    [Fact]
+    public async Task SweptClientIsATimeout()
+    {
+        this.Build(ServiceA, TimeSpan.FromMilliseconds(50));
+        await this.host.Start();
+        await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
+        BleHubClientDisconnectedEventArgs? left = null;
+        this.testHub.ClientDisconnected += (_, e) => left = e;
+
+        // gone from the GATT server without an unsubscribe being reported
+        this.hosting.Characteristic(TestChar).Forget("c1");
+
+        await WaitFor(() => left != null);
+        Assert.Equal(HubDisconnectReason.ClientTimeout, left!.Disconnect.Reason);
+    }
+
+
+    [Fact]
     public async Task HostStopStopsEveryHub()
     {
         this.Build(ServiceA);
         await this.host.Start();
         var test = await this.Connect<ITestHub>(TestChar, ServiceA, "c1");
-        var disconnected = false;
-        ((IBleHubConnection)test).Disconnected += (_, _) => disconnected = true;
+        HubDisconnect? disconnected = null;
+        ((IBleHubConnection)test).Disconnected += (_, d) => disconnected = d;
 
         await this.host.Stop("bye");
 
-        await WaitFor(() => disconnected);
+        await WaitFor(() => disconnected != null);
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ServerShutdown, "bye"), disconnected);
         Assert.False(this.testHub.IsRunning);
         Assert.False(this.secondHub.IsRunning);
         Assert.False(this.hosting.IsAdvertising);
@@ -222,19 +290,19 @@ public class BleHubHostTests : IAsyncLifetime
         Assert.Single(this.testHub.ConnectedClients);
 
         await this.testHub.Stop("bye");
-        Assert.Equal("bye", channel.DisconnectReason);
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ServerShutdown, "bye"), channel.Disconnect);
         Assert.Empty(this.testHub.ConnectedClients);
     }
 
 
     sealed class RecordingChannel : IBleHubPeerChannel
     {
-        public string? DisconnectReason { get; private set; }
+        public HubDisconnect? Disconnect { get; private set; }
         public Task Push(string eventName, byte[] arguments, CancellationToken cancellationToken) => Task.CompletedTask;
 
-        public Task Disconnect(string? reason, CancellationToken cancellationToken)
+        Task IBleHubPeerChannel.Disconnect(HubDisconnect disconnect, CancellationToken cancellationToken)
         {
-            this.DisconnectReason = reason;
+            this.Disconnect = disconnect;
             return Task.CompletedTask;
         }
     }

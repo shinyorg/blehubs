@@ -57,10 +57,10 @@ public class GameHub(GameEngine engine, GameSession session) : BleHub<IGameHub>
         return base.OnConnectedAsync();
     }
 
-    public override async Task OnDisconnectedAsync(string? reason)
+    public override async Task OnDisconnectedAsync(HubDisconnect disconnect)
     {
         if (engine.Leave(this.Context.ConnectionId))
-            session.ShowEmoteLocally(this.Context.Client.Name ?? "Opponent", "🚪 left");
+            session.ShowEmoteLocally(this.Context.Client.Name ?? "Opponent", disconnect.Reason == HubDisconnectReason.ClientTimeout ? "📡 lost connection" : "🚪 left");
 
         await session.BroadcastState();
     }

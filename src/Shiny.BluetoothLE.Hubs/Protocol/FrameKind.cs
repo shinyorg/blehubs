@@ -10,6 +10,7 @@ public enum FrameKind : byte
     Invoke = 0x10,
     StreamInvoke = 0x12,
     Cancel = 0x13,
+    // Disconnect (0x40) is also sent client -> host when the client leaves
 
     // host -> client
     HandshakeAck = 0x02,

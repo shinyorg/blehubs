@@ -31,9 +31,17 @@ public class BleHubRemoteException(string remoteErrorType, string message) : Ble
 /// <summary>
 /// The connection dropped (or was ended by the host) while a call was in flight
 /// </summary>
-public class BleHubDisconnectedException(string message, string? reason = null) : BleHubException(message)
+public class BleHubDisconnectedException(string message, HubDisconnect? disconnect = null) : BleHubException(message)
 {
-    public string? Reason { get; } = reason;
+    /// <summary>
+    /// Why the connection ended, when it had been connected
+    /// </summary>
+    public HubDisconnect? Disconnect { get; } = disconnect;
+
+    /// <summary>
+    /// <see cref="HubDisconnect.Description"/>
+    /// </summary>
+    public string? Reason => this.Disconnect?.Description;
 }
 
 

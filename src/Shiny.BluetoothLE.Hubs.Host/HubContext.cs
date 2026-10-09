@@ -80,7 +80,8 @@ internal sealed class HubContext<THub>(Func<HubRuntime> getRuntime, BleHubHost? 
         remove => this.Runtime.ClientDisconnected -= value;
     }
 
-    public Task Disconnect(string connectionId, string? reason = null) => this.Runtime.Disconnect(connectionId, reason);
+    public Task Disconnect(string connectionId, string? reason = null)
+        => this.Runtime.Disconnect(connectionId, new HubDisconnect(HubDisconnectReason.ServerDisconnect, reason));
 
     public IHubClients<BleHubPush<TContract>> GetClients<TContract>() where TContract : class
     {

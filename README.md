@@ -66,6 +66,14 @@ services.AddBleHubClient<IGameHub>(ServiceUuid, CharacteristicUuid);   // inject
   - A GATT service shared by several hubs stays up while any of them is running.
   - The advertisement follows the running hubs.
 - **Disconnect is cooperative**, because iOS peripherals can't drop a central. `Context.Abort()` and `IHubContext.Disconnect()` ask the client to leave. The client library does so and raises `Disconnected` with the reason.
+- **Disconnect reasons are typed.** Both sides get a `HubDisconnect(Reason, Message)` whose `HubDisconnectReason` you can switch on:
+  - `ClientDisconnect`: the client called `Disconnect()` or was disposed. Over BLE the client sends a `Disconnect` frame before it unsubscribes, so the host can tell it left on purpose.
+  - `ClientTimeout`: the link was lost (an unsubscribe with no goodbye, the host's sweep, or a drop seen by the client).
+  - `ServerDisconnect`: `Context.Abort(reason)` or `IHubContext.Disconnect(id, reason)`.
+  - `ServerShutdown`: `IBleHubHost.Stop(reason)` or `IHubContext.Stop(reason)`.
+  - `ConnectionFailed`: a connect or handshake failed. No `Disconnected` event is raised, because the client never connected.
+
+  On the host, override `OnDisconnectedAsync(HubDisconnect)` or read `ClientDisconnected`'s `e.Disconnect`. On the client, `Disconnected` is an `EventHandler<HubDisconnect>`, and `StatusChanged` and `BleHubDisconnectedException` carry it as `Disconnect`. `Description` (and the `Reason` string properties) give the message, or a default text for the reason. Existing `OnDisconnectedAsync(string? reason)` overrides keep working.
 - **Multiple hubs**: each hub needs its own characteristic. Sharing one service UUID is recommended so the advertisement holds only one 128-bit UUID. Hub clients on the same device share one BLE connection.
 
 - **Over Wi-Fi too**: [Shiny.SwitchboardR](https://github.com/shinyorg/switchboardr) serves the same hubs over Wi-Fi (with mDNS discovery) alongside BLE, and lets clients connect over whichever transport is available, with no change to hub or contract code. It builds on hidden transport seams in this library (`IHubContext<THub>.TransportEndpoint`, `BleHubClient.ConnectExternal`).

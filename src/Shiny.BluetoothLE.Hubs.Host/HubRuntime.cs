@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Shiny.BluetoothLE.Hosting;
 using Shiny.BluetoothLE.Hubs.Protocol;
 
 namespace Shiny.BluetoothLE.Hubs;
@@ -101,8 +102,16 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
             return false;
         }
 
-        if (message != null)
+        if (message?.Kind == FrameKind.Disconnect)
+        {
+            // handled inline, in the GATT write - the client unsubscribes right after, and that must find it already gone
+            // rather than be taken for a dropped link
+            this.OnPeerGone(peer.Id, ProtocolSerializer.ReadDisconnect(message.Payload).ToDisconnect(HubDisconnectReason.ClientDisconnect));
+        }
+        else if (message != null)
+        {
             _ = Task.Run(() => this.Dispatch(peer, message));
+        }
 
         return true;
     }
@@ -111,7 +120,7 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
     /// <summary>
     /// The peer unsubscribed, disconnected or was removed
     /// </summary>
-    public void OnPeerGone(string peerId, string? reason)
+    public void OnPeerGone(string peerId, HubDisconnect disconnect)
     {
         if (!this.peers.TryRemove(peerId, out var peer))
             return;
@@ -121,19 +130,19 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
             return;
 
         var client = peer.Client;
-        this.logger?.LogInformation("Client {Client} left {Hub}: {Reason}", client, this.registration.HubType.Name, reason);
+        this.logger?.LogInformation("Client {Client} left {Hub}: {Reason}", client, this.registration.HubType.Name, disconnect);
         _ = Task.Run(async () =>
         {
             try
             {
-                await this.RunLifecycle(peer, client, hub => hub.OnDisconnectedAsync(reason)).ConfigureAwait(false);
+                await this.RunLifecycle(peer, client, hub => hub.OnDisconnectedAsync(disconnect)).ConfigureAwait(false);
             }
             finally
             {
                 foreach (var group in this.groups.Values)
                     group.TryRemove(client.Id, out _);
 
-                this.ClientDisconnected?.Invoke(this, new BleHubClientDisconnectedEventArgs(client, reason));
+                this.ClientDisconnected?.Invoke(this, new BleHubClientDisconnectedEventArgs(client, disconnect));
             }
         });
     }
@@ -172,7 +181,7 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
     }
 
 
-    public async Task Disconnect(string connectionId, string? reason)
+    public async Task Disconnect(string connectionId, HubDisconnect disconnect)
     {
         if (!this.peers.TryGetValue(connectionId, out var peer))
             return;
@@ -182,11 +191,11 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             if (peer.Channel != null)
             {
-                await peer.Channel.Disconnect(reason, cts.Token).ConfigureAwait(false);
+                await peer.Channel.Disconnect(disconnect, cts.Token).ConfigureAwait(false);
             }
             else
             {
-                var payload = ProtocolSerializer.Serialize(new DisconnectInfo(reason));
+                var payload = ProtocolSerializer.Serialize(DisconnectInfo.From(disconnect));
                 await this.Send(peer, FrameKind.Disconnect, peer.NextHostMessageId(), null, payload, cts.Token).ConfigureAwait(false);
             }
         }
@@ -194,13 +203,13 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
         {
             this.logger?.LogInformation(ex, "Could not deliver disconnect to {Peer}", connectionId);
         }
-        this.OnPeerGone(connectionId, reason ?? "Disconnected by host");
+        this.OnPeerGone(connectionId, disconnect);
     }
 
 
-    public async Task DisconnectAll(string? reason)
+    public async Task DisconnectAll(HubDisconnect disconnect)
     {
-        await Task.WhenAll(this.peers.Keys.ToList().Select(x => this.Disconnect(x, reason))).ConfigureAwait(false);
+        await Task.WhenAll(this.peers.Keys.ToList().Select(x => this.Disconnect(x, disconnect))).ConfigureAwait(false);
         this.lifetime.Cancel();
         this.lifetime = new CancellationTokenSource();
     }
@@ -309,7 +318,10 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
         {
             // registered and OnConnectedAsync completed before the ack goes out, so the client is never told it is in
             // before the hub knows about it (and has had a chance to put it in groups)
-            var client = new BleHubConnectedClient(peer.Id, info.Name, info.AppVersion, info.Properties ?? new(), peer.Mtu);
+            var client = new BleHubConnectedClient(peer.Id, info.Name, info.AppVersion, info.Properties ?? new(), peer.Mtu)
+            {
+                Peripheral = peer.Native as IPeripheral
+            };
             peer.Client = client;
             try
             {
@@ -395,7 +407,7 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
         }
 
         if (abortRequested)
-            await this.Disconnect(peer.Id, abortReason).ConfigureAwait(false);
+            await this.Disconnect(peer.Id, new HubDisconnect(HubDisconnectReason.ServerDisconnect, abortReason)).ConfigureAwait(false);
     }
 
 
@@ -469,11 +481,11 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
         }
 
         if (abortRequested)
-            await this.Disconnect(connectionId, abortReason).ConfigureAwait(false);
+            await this.Disconnect(connectionId, new HubDisconnect(HubDisconnectReason.ServerDisconnect, abortReason)).ConfigureAwait(false);
     }
 
 
-    public void Disconnected(string connectionId, string? reason) => this.OnPeerGone(connectionId, reason);
+    public void Disconnected(string connectionId, HubDisconnect disconnect) => this.OnPeerGone(connectionId, disconnect);
 
 
     (HostPeer Peer, BleHubConnectedClient Client) GetExternal(string connectionId)
@@ -488,7 +500,7 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
     object CreateHub(IServiceProvider scope, HostPeer peer, BleHubConnectedClient client, Action<string?>? abort = null)
     {
         var hub = scope.GetRequiredService(this.registration.HubType);
-        abort ??= reason => _ = this.Disconnect(peer.Id, reason);
+        abort ??= reason => _ = this.Disconnect(peer.Id, new HubDisconnect(HubDisconnectReason.ServerDisconnect, reason));
         ((IBleHubInternal)hub).Initialize(new BleHubCallerContext(client, abort, peer.Aborted), this);
         return hub;
     }
@@ -588,4 +600,15 @@ internal sealed class HostPeer(string id, object? native, MessageReassembler rea
 }
 
 
-public sealed record BleHubClientDisconnectedEventArgs(BleHubConnectedClient Client, string? Reason);
+/// <summary>
+/// A client left a hub
+/// </summary>
+/// <param name="Client">Who left</param>
+/// <param name="Disconnect">Why</param>
+public sealed record BleHubClientDisconnectedEventArgs(BleHubConnectedClient Client, HubDisconnect Disconnect)
+{
+    /// <summary>
+    /// <see cref="HubDisconnect.Description"/>
+    /// </summary>
+    public string Reason => this.Disconnect.Description;
+}

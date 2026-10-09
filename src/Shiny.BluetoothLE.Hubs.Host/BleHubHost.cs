@@ -106,11 +106,11 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
     }
 
 
-    public Task Stop(string? reason = null) => this.StopHubs(this.runtimes.Values.ToList(), reason ?? "Host stopped");
+    public Task Stop(string? reason = null) => this.StopHubs(this.runtimes.Values.ToList(), new HubDisconnect(HubDisconnectReason.ServerShutdown, reason));
 
 
     public Task StartHub(HubRuntime runtime, CancellationToken cancellationToken) => this.StartHubs([runtime], cancellationToken);
-    public Task StopHub(HubRuntime runtime, string? reason) => this.StopHubs([runtime], reason ?? "Hub stopped");
+    public Task StopHub(HubRuntime runtime, string? reason) => this.StopHubs([runtime], new HubDisconnect(HubDisconnectReason.ServerShutdown, reason ?? "Hub stopped"));
 
 
     async Task StartHubs(IReadOnlyList<HubRuntime> hubs, CancellationToken cancellationToken)
@@ -169,7 +169,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
     }
 
 
-    async Task StopHubs(IReadOnlyList<HubRuntime> hubs, string reason)
+    async Task StopHubs(IReadOnlyList<HubRuntime> hubs, HubDisconnect disconnect)
     {
         await this.startLock.WaitAsync().ConfigureAwait(false);
         try
@@ -182,7 +182,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
             foreach (var runtime in stopping)
                 runtime.IsRunning = false;
 
-            await Task.WhenAll(stopping.Select(x => x.DisconnectAll(reason))).ConfigureAwait(false);
+            await Task.WhenAll(stopping.Select(x => x.DisconnectAll(disconnect))).ConfigureAwait(false);
 
             this.RemoveUnusedServices();
             if (this.IsRunning)
@@ -190,7 +190,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
             else
                 await this.StopInfrastructure().ConfigureAwait(false);
 
-            this.logger?.LogInformation("Stopped hub(s) {Hubs}: {Reason}", String.Join(", ", stopping.Select(x => x.Registration.HubType.Name)), reason);
+            this.logger?.LogInformation("Stopped hub(s) {Hubs}: {Reason}", String.Join(", ", stopping.Select(x => x.Registration.HubType.Name)), disconnect.Description);
         }
         finally
         {
@@ -317,7 +317,9 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
     Task OnSubscription(HubRuntime runtime, CharacteristicSubscription sub)
     {
         if (!sub.IsSubscribing)
-            runtime.OnPeerGone(sub.Peripheral.Uuid, "Unsubscribed");
+            // a client leaving on purpose says so first (a Disconnect frame), so an unsubscribe on its own is a dropped link -
+            // both iOS and Android report a central that vanished as an unsubscribe
+            runtime.OnPeerGone(sub.Peripheral.Uuid, new HubDisconnect(HubDisconnectReason.ClientTimeout, "Unsubscribed"));
 
         return Task.CompletedTask;
     }
@@ -344,7 +346,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
                 foreach (var peer in runtime.Peers.Where(x => x.Channel == null).ToList())
                 {
                     if (!subscribed.Contains(peer.Id))
-                        runtime.OnPeerGone(peer.Id, "Connection lost");
+                        runtime.OnPeerGone(peer.Id, new HubDisconnect(HubDisconnectReason.ClientTimeout));
                 }
             }
             catch (Exception ex)

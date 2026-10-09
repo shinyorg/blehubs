@@ -50,7 +50,7 @@ public interface IBleHubClientTransportEvents
     void Pushed(string eventName, ReadOnlyMemory<byte> arguments);
 
     /// <summary>
-    /// The connection ended without the app asking (the host disconnected the client, or the link was lost)
+    /// The connection ended without the app asking (the host disconnected the client, or the link was lost), and why
     /// </summary>
-    void Closed(string? reason);
+    void Closed(HubDisconnect disconnect);
 }

@@ -37,9 +37,18 @@ public sealed record RemoteError(
 );
 
 /// <summary>
-/// The host is ending the session
+/// One side is ending the session. Host to client: the host disconnected the client. Client to host: the client is
+/// leaving. <paramref name="Kind"/> is absent from peers older than it - read it through <see cref="ToDisconnect"/>.
 /// </summary>
-public sealed record DisconnectInfo(string? Reason);
+public sealed record DisconnectInfo(string? Reason, HubDisconnectReason? Kind = null)
+{
+    public static DisconnectInfo From(HubDisconnect disconnect) => new(disconnect.Message, disconnect.Reason);
+
+    /// <summary>
+    /// The disconnect this describes - <paramref name="fallback"/> when the sender didn't say why
+    /// </summary>
+    public HubDisconnect ToDisconnect(HubDisconnectReason fallback) => new(this.Kind ?? fallback, this.Reason);
+}
 
 
 [JsonSerializable(typeof(HandshakeInfo))]

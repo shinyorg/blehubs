@@ -26,8 +26,15 @@ public abstract class BleHub<TContract> : IBleHubInternal where TContract : clas
 
     /// <summary>
     /// Runs when a client leaves (disconnect, unsubscribe, host disconnect or connection loss). Group membership is still intact.
+    /// Override <see cref="OnDisconnectedAsync(HubDisconnect)"/> instead to know why as a <see cref="HubDisconnectReason"/>.
     /// </summary>
     public virtual Task OnDisconnectedAsync(string? reason) => Task.CompletedTask;
+
+    /// <summary>
+    /// Runs when a client leaves, saying why. Group membership is still intact. By default it calls
+    /// <see cref="OnDisconnectedAsync(string)"/> with <see cref="HubDisconnect.Description"/>.
+    /// </summary>
+    public virtual Task OnDisconnectedAsync(HubDisconnect disconnect) => this.OnDisconnectedAsync(disconnect.Description);
 
 
     void IBleHubInternal.Initialize(BleHubCallerContext context, HubRuntime runtime)
@@ -43,7 +50,7 @@ internal interface IBleHubInternal
 {
     void Initialize(BleHubCallerContext context, HubRuntime runtime);
     Task OnConnectedAsync();
-    Task OnDisconnectedAsync(string? reason);
+    Task OnDisconnectedAsync(HubDisconnect disconnect);
 }
 
 

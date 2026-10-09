@@ -47,7 +47,7 @@ public class GameSession
             if (!this.IsHost && this.IsActive)
             {
                 this.IsActive = false;
-                this.Ended?.Invoke(this, reason);
+                this.Ended?.Invoke(this, reason.Description);
             }
         };
     }

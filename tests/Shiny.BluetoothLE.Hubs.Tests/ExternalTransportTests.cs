@@ -200,15 +200,16 @@ public class ExternalTransportTests : IAsyncLifetime
     public async Task HostDisconnectReachesTheClient()
     {
         var (_, client, _) = await this.Connect();
-        string? reason = null;
-        client.Disconnected += (_, r) => reason = r;
+        HubDisconnect? disconnect = null;
+        client.Disconnected += (_, d) => disconnect = d;
 
-        await this.runtime.Disconnect("wifi-1", "Go away");
+        await this.runtime.Disconnect("wifi-1", new HubDisconnect(HubDisconnectReason.ServerDisconnect, "Go away"));
 
-        await WaitFor(() => reason != null);
-        Assert.Equal("Go away", reason);
+        await WaitFor(() => disconnect != null);
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ServerDisconnect, "Go away"), disconnect);
         Assert.Equal(BleHubClientStatus.Disconnected, client.Status);
         await WaitFor(() => this.log.Entries.Contains("disconnected:Alice:Go away"));
+        Assert.Contains("reason:Alice:ServerDisconnect", this.log.Entries);
     }
 
 
@@ -216,13 +217,13 @@ public class ExternalTransportTests : IAsyncLifetime
     public async Task AbortTakesEffectAfterTheReply()
     {
         var (hub, client, _) = await this.Connect();
-        string? reason = null;
-        client.Disconnected += (_, r) => reason = r;
+        HubDisconnect? disconnect = null;
+        client.Disconnected += (_, d) => disconnect = d;
 
         await hub.Kick("kicked");
 
-        await WaitFor(() => reason != null);
-        Assert.Equal("kicked", reason);
+        await WaitFor(() => disconnect != null);
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ServerDisconnect, "kicked"), disconnect);
         Assert.Empty(this.runtime.Clients);
     }
 
@@ -234,7 +235,7 @@ public class ExternalTransportTests : IAsyncLifetime
         await client.Disconnect();
 
         Assert.True(transport.ClosedByApp);
-        await WaitFor(() => this.log.Entries.Any(x => x.StartsWith("disconnected:Alice")));
+        await WaitFor(() => this.log.Entries.Contains("reason:Alice:ClientDisconnect"));
         Assert.Empty(this.runtime.Clients);
     }
 
@@ -249,6 +250,8 @@ public class ExternalTransportTests : IAsyncLifetime
 
         var ex = await Assert.ThrowsAsync<BleHubDisconnectedException>(() => slow);
         Assert.Equal("Wi-Fi dropped", ex.Reason);
+        Assert.Equal(HubDisconnectReason.ClientTimeout, ex.Disconnect!.Reason);
+        await WaitFor(() => this.log.Entries.Contains("reason:Alice:ClientTimeout"));
         Assert.Equal(BleHubClientStatus.Disconnected, client.Status);
         Assert.False(transport.ClosedByApp);
     }
@@ -311,7 +314,7 @@ public class ExternalTransportTests : IAsyncLifetime
             }
 
             if (result.AbortRequested)
-                _ = runtime.Disconnect(connectionId, result.AbortReason);
+                _ = runtime.Disconnect(connectionId, new HubDisconnect(HubDisconnectReason.ServerDisconnect, result.AbortReason));
 
             return result.Result ?? ReadOnlyMemory<byte>.Empty;
         }
@@ -343,15 +346,16 @@ public class ExternalTransportTests : IAsyncLifetime
         public Task Close(CancellationToken cancellationToken)
         {
             this.ClosedByApp = true;
-            runtime.Disconnected(connectionId, "Client left");
+            runtime.Disconnected(connectionId, new HubDisconnect(HubDisconnectReason.ClientDisconnect));
             return Task.CompletedTask;
         }
 
 
         public void Lose(string reason)
         {
-            runtime.Disconnected(connectionId, reason);
-            events.Closed(reason);
+            var disconnect = new HubDisconnect(HubDisconnectReason.ClientTimeout, reason);
+            runtime.Disconnected(connectionId, disconnect);
+            events.Closed(disconnect);
         }
 
 
@@ -364,9 +368,9 @@ public class ExternalTransportTests : IAsyncLifetime
         }
 
 
-        Task IBleHubPeerChannel.Disconnect(string? reason, CancellationToken cancellationToken)
+        Task IBleHubPeerChannel.Disconnect(HubDisconnect disconnect, CancellationToken cancellationToken)
         {
-            events.Closed(reason);
+            events.Closed(disconnect);
             return Task.CompletedTask;
         }
     }

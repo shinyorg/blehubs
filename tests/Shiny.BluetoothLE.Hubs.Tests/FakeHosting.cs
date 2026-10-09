@@ -131,9 +131,14 @@ public class FakeCharacteristic(string uuid) : IGattCharacteristic, IGattCharact
 
     public Task Unsubscribe(HostedPeripheral central)
     {
-        this.subscribed.Remove(central);
+        this.subscribed.RemoveAll(x => x.Uuid == central.Uuid);
         return this.onSubscribe?.Invoke(new CharacteristicSubscription(this, central, false)) ?? Task.CompletedTask;
     }
+
+    /// <summary>
+    /// The central vanished without the platform reporting an unsubscribe
+    /// </summary>
+    public void Forget(string uuid) => this.subscribed.RemoveAll(x => x.Uuid == uuid);
 
     public async Task Write(HostedPeripheral central, byte[] data)
     {

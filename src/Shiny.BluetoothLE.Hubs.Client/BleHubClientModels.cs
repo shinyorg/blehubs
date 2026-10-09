@@ -31,7 +31,18 @@ public sealed record BleHubConnectOptions(
 );
 
 
-public sealed record BleHubStatusChangedEventArgs(BleHubClientStatus Status, string? Reason);
+/// <summary>
+/// The client's status changed
+/// </summary>
+/// <param name="Status">The new status</param>
+/// <param name="Disconnect">Why the connection is ending - set for Disconnecting and Disconnected</param>
+public sealed record BleHubStatusChangedEventArgs(BleHubClientStatus Status, HubDisconnect? Disconnect = null)
+{
+    /// <summary>
+    /// <see cref="HubDisconnect.Description"/>, null when nothing is ending
+    /// </summary>
+    public string? Reason => this.Disconnect?.Description;
+}
 
 
 /// <summary>
@@ -56,9 +67,10 @@ public interface IBleHubConnection
     event EventHandler? Connected;
 
     /// <summary>
-    /// Raised with the reason (host disconnect, connection lost, you called Disconnect...)
+    /// Raised once a connection ends, with why: <see cref="HubDisconnect.Reason"/> (you disconnected, the link was lost,
+    /// the host disconnected you or shut down...) and the host's message, if it gave one
     /// </summary>
-    event EventHandler<string?>? Disconnected;
+    event EventHandler<HubDisconnect>? Disconnected;
 
     /// <summary>
     /// Scans for hosts serving this hub. Dispose the subscription to stop scanning.

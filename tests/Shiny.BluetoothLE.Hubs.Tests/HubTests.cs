@@ -298,13 +298,13 @@ public class HubTests : IAsyncLifetime
     {
         var hub = await this.Connect();
         var client = this.clients["peer-1"];
-        string? reason = null;
-        client.Disconnected += (_, r) => reason = r;
+        HubDisconnect? disconnect = null;
+        client.Disconnected += (_, d) => disconnect = d;
 
         await hub.Kick("bye now");
 
-        await WaitFor(() => reason != null);
-        Assert.Equal("bye now", reason);
+        await WaitFor(() => disconnect != null);
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ServerDisconnect, "bye now"), disconnect);
         Assert.Equal(BleHubClientStatus.Disconnected, client.Status);
         await WaitFor(() => this.log.Entries.Contains("disconnected:Alice:bye now"));
         Assert.Empty(this.runtime.Clients);
@@ -317,9 +317,13 @@ public class HubTests : IAsyncLifetime
     {
         await this.Connect();
         IHubContext<TestHub> context = new HubContext<TestHub>(() => this.runtime);
+        HubDisconnect? disconnect = null;
+        this.clients["peer-1"].Disconnected += (_, d) => disconnect = d;
         await context.Disconnect("peer-1", "kicked");
 
-        await WaitFor(() => this.clients["peer-1"].Status == BleHubClientStatus.Disconnected);
+        await WaitFor(() => disconnect != null);
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ServerDisconnect, "kicked"), disconnect);
+        await WaitFor(() => this.log.Entries.Contains("reason:Alice:ServerDisconnect"));
     }
 
 
@@ -331,7 +335,65 @@ public class HubTests : IAsyncLifetime
         await Task.Delay(100);
 
         await this.clients["peer-1"].LoseConnection("radio silence");
-        await Assert.ThrowsAsync<BleHubDisconnectedException>(() => call);
+        var ex = await Assert.ThrowsAsync<BleHubDisconnectedException>(() => call);
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ClientTimeout, "radio silence"), ex.Disconnect);
+    }
+
+
+    [Fact]
+    public async Task ClientDisconnectTellsTheHostItLeft()
+    {
+        await this.Connect();
+        var client = this.clients["peer-1"];
+        var statuses = new List<BleHubStatusChangedEventArgs>();
+        HubDisconnect? disconnect = null;
+        client.StatusChanged += (_, e) => statuses.Add(e);
+        client.Disconnected += (_, d) => disconnect = d;
+
+        await client.Disconnect();
+
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ClientDisconnect), disconnect);
+        Assert.Equal(
+            [
+                new BleHubStatusChangedEventArgs(BleHubClientStatus.Disconnecting, disconnect),
+                new BleHubStatusChangedEventArgs(BleHubClientStatus.Disconnected, disconnect)
+            ],
+            statuses
+        );
+        await WaitFor(() => this.log.Entries.Contains("reason:Alice:ClientDisconnect"));
+        Assert.Empty(this.runtime.Clients);
+    }
+
+
+    [Fact]
+    public async Task StoppingTheHubIsAShutdownOnTheClient()
+    {
+        await this.Connect();
+        HubDisconnect? disconnect = null;
+        this.clients["peer-1"].Disconnected += (_, d) => disconnect = d;
+
+        await this.runtime.DisconnectAll(new HubDisconnect(HubDisconnectReason.ServerShutdown, "closing time"));
+
+        await WaitFor(() => disconnect != null);
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ServerShutdown, "closing time"), disconnect);
+        await WaitFor(() => this.log.Entries.Contains("reason:Alice:ServerShutdown"));
+    }
+
+
+    [Fact]
+    public async Task ADisconnectFromAnOlderHostIsAServerDisconnect()
+    {
+        await this.Connect();
+        HubDisconnect? disconnect = null;
+        this.clients["peer-1"].Disconnected += (_, d) => disconnect = d;
+
+        // hosts before the reason code sent only {"Reason": ...}
+        var payload = System.Text.Encoding.UTF8.GetBytes("""{"Reason":"legacy"}""");
+        foreach (var frame in FrameCodec.Encode(FrameKind.Disconnect, 0x8001, null, payload, FrameCodec.GetFrameSize(this.mtu)))
+            this.clients["peer-1"].ReceiveFrame(frame);
+
+        await WaitFor(() => disconnect != null);
+        Assert.Equal(new HubDisconnect(HubDisconnectReason.ServerDisconnect, "legacy"), disconnect);
     }
 
 

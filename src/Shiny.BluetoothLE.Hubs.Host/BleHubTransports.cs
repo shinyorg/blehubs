@@ -16,9 +16,9 @@ public interface IBleHubPeerChannel
     Task Push(string eventName, byte[] arguments, CancellationToken cancellationToken);
 
     /// <summary>
-    /// The hub is ending this client's session - tell the client, then drop it
+    /// The hub is ending this client's session - tell the client why, then drop it
     /// </summary>
-    Task Disconnect(string? reason, CancellationToken cancellationToken);
+    Task Disconnect(HubDisconnect disconnect, CancellationToken cancellationToken);
 }
 
 
@@ -66,12 +66,12 @@ public interface IBleHubTransportEndpoint
     /// <summary>
     /// The client is gone (it left, or its connection was lost) - runs OnDisconnectedAsync and removes it from its groups
     /// </summary>
-    void Disconnected(string connectionId, string? reason);
+    void Disconnected(string connectionId, HubDisconnect disconnect);
 
     /// <summary>
     /// Ends a client's session through its channel, then forgets it
     /// </summary>
-    Task Disconnect(string connectionId, string? reason);
+    Task Disconnect(string connectionId, HubDisconnect disconnect);
 
     BleHubConnectedClient? FindClient(string connectionId);
 }
