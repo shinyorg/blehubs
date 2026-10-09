@@ -127,8 +127,10 @@ simulator has no Bluetooth and Android emulators are unreliable.
 
 ## Build & release
 
-- **Versioning**: Nerdbank.GitVersioning (`version.json`). `PublicRelease` is set on CI and tags `v*` produce release
-  versions.
+- **Versioning**: Nerdbank.GitVersioning (`version.json`). `PublicRelease` is always on
+  (`Directory.Build.props`), and `Directory.Build.targets` strips NBGV's `+<commit>` from the informational version.
+  **A version never carries the git commit hash**: no `-g<hash>` package suffix and no `+<hash>` metadata. Keep it
+  that way.
 - **CI**: `.github/workflows/build.yml` runs on macOS. It builds `Build.slnf` (Release, which packs to `artifacts/`),
   runs the tests, and compile-checks the sample for Android and iOS. It publishes to NuGet through OIDC on pushes to
   `preview` / `v*`.
