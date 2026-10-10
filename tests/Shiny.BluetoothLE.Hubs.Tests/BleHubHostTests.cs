@@ -54,22 +54,26 @@ public class BleHubHostTests : IAsyncLifetime
     /// <summary>
     /// A client proxy wired to the fake GATT server like a real central would be
     /// </summary>
-    async Task<TContract> Connect<TContract>(string characteristicUuid, string centralId) where TContract : class
+    /// <param name="mtu">The central's payload size, as Shiny reports it (ATT MTU minus 3)</param>
+    async Task<TContract> Connect<TContract>(string characteristicUuid, string centralId, int mtu = 185, List<byte[]>? notified = null) where TContract : class
     {
         var client = BleHubClientFactories.Create<TContract>(new BleHubClientServices(this.options, this.serializer), this.serviceUuid, characteristicUuid);
-        var central = new FakeCentral(centralId);
+        var central = new FakeCentral(centralId, mtu);
         var ch = this.hosting.Characteristic(characteristicUuid);
 
         var previous = ch.Notified;
         ch.Notified = (id, frame) =>
         {
             if (id == centralId)
+            {
+                notified?.Add(frame);
                 client.ReceiveFrame(frame);
+            }
             else
                 previous?.Invoke(id, frame);
         };
         await ch.Subscribe(central);
-        await client.ConnectTransport((frame, _) => ch.Write(central, frame), central.Mtu, new BleHubConnectOptions(centralId), CancellationToken.None);
+        await client.ConnectTransport((frame, _) => ch.Write(central, frame), central.Mtu + BleConstants.AttHeaderSize, new BleHubConnectOptions(centralId), CancellationToken.None);
         return (TContract)(object)client;
     }
 
@@ -99,6 +103,26 @@ public class BleHubHostTests : IAsyncLifetime
         var second = await this.Connect<ISecondHub>(SecondChar, "c2");
         Assert.Equal(new Payload("x", 1), await test.Echo(new Payload("x", 1)));
         Assert.Equal("pong", await second.Ping());
+    }
+
+
+    [Fact]
+    public async Task FramesFillTheCentralsWholePayload()
+    {
+        this.Build();
+        await this.host.Start();
+
+        // Shiny reports a central's payload size (ATT MTU 185 - 3) - every frame but the last is exactly that big
+        var frames = new List<byte[]>();
+        var test = await this.Connect<ITestHub>(TestChar, "c1", mtu: 182, notified: frames);
+        frames.Clear();
+
+        var big = new Payload(new string('x', 2000), 1);
+        Assert.Equal(big, await test.Echo(big));
+        Assert.True(frames.Count > 1);
+        Assert.All(frames[..^1], x => Assert.Equal(182, x.Length));
+        Assert.True(frames[^1].Length <= 182);
+        Assert.Equal(185, this.host.GetRuntime(typeof(TestHub)).FindClient("c1")!.Mtu);
     }
 
 

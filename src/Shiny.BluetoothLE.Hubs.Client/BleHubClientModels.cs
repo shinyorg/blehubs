@@ -85,7 +85,8 @@ public interface IBleHubConnection
     event EventHandler<string?>? HostRenamed;
 
     /// <summary>
-    /// Scans for hosts serving this hub. Dispose the subscription to stop scanning.
+    /// Scans for hosts serving this hub. Dispose the subscription to stop scanning. While this app hosts hubs too
+    /// (AddBleHubServer), its own advertisement is left out - matched by service UUID and advertised local name.
     /// </summary>
     IObservable<BleHubHostInfo> Discover();
 
@@ -133,6 +134,11 @@ public sealed class BleHubClientServices(
     public IBleManager? BleManager { get; } = bleManager;
     public ILoggerFactory? LoggerFactory { get; } = loggerFactory;
     internal BleConnectionTracker Connections { get; } = new();
+
+    /// <summary>
+    /// What this app's own hub host is advertising - discovery leaves it out
+    /// </summary>
+    internal LocalHubAdvertisement? LocalAdvertisement { get; init; }
 }
 
 

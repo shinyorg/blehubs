@@ -29,6 +29,8 @@ internal static class BleHubServiceCollectionExtensions
             return options;
         });
         services.TryAddSingleton<IBleHubSerializer>(sp => new ShinyJsonBleHubSerializer(sp.GetService<ISerializer>()));
+        // a host and the clients in the same app share it - clients leave the host's own advertisement out of discovery
+        services.TryAddSingleton<LocalHubAdvertisement>();
         return services;
     }
 }

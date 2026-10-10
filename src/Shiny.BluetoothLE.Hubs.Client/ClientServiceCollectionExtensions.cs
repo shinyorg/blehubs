@@ -49,7 +49,10 @@ public static class ClientServiceCollectionExtensions
             sp.GetRequiredService<IBleHubSerializer>(),
             sp.GetService<IBleManager>(),
             sp.GetService<ILoggerFactory>()
-        ));
+        )
+        {
+            LocalAdvertisement = sp.GetService<LocalHubAdvertisement>()
+        });
 
         services.AddSingleton<IBleHubClient<TContract>>(sp => (IBleHubClient<TContract>)BleHubClientFactories.Create<TContract>(
             sp.GetRequiredService<BleHubClientServices>(),

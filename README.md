@@ -39,7 +39,7 @@ await client.UploadFile(path, "avatar.jpg");                      // L2CAP
 |---|---|
 | `Shiny.BluetoothLE.Hubs` | Wire protocol (framing, chunking, reassembly), argument codec, serializer, `[BleHubClient]`. Ships the source generator |
 | `Shiny.BluetoothLE.Hubs.Host` | `BleHub<T>`, `IBleHubHost`, `IHubContext<THub>`, groups, L2CAP file server |
-| `Shiny.BluetoothLE.Hubs.Client` | `BleHubClient` (base of the generated proxies), discovery, shared connections, file upload and download |
+| `Shiny.BluetoothLE.Hubs.Client` | `BleHubClient` (base of the generated proxies), discovery (which leaves out the app's own host), shared connections, file upload and download |
 
 ## Setup
 

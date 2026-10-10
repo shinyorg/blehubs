@@ -98,7 +98,10 @@ Correlated, chunked notifications avoid all three problems.
 
 ## 3. Wire protocol (v1)
 
-Every write or notification is one **frame**, at most `MTU - 3` bytes.
+Every write or notification is one **frame**, at most `MTU - 3` bytes (capped at 512).
+
+- **Units:** inside blehubs "MTU" is always the ATT MTU (`FrameCodec.GetFrameSize(attMtu)`, `BleHubConnectedClient.Mtu`). Shiny's `IPeripheral.Mtu`, on both the client and the host, is the payload size (ATT MTU minus 3), so the BLE adapters add `BleConstants.AttHeaderSize` where it enters (`BleHubClient.Connect`, `BleHubHost.OnWrite`). Until 1.1.1 they didn't, and frames came out 3 bytes short.
+- Receivers reassemble from each frame's header, never from a frame size, so peers with different frame sizes interoperate. Frame size changes are wire compatible.
 
 ```
 offset size  field
@@ -234,10 +237,10 @@ Contracts declared in a referenced assembly are supported. Proxies and senders g
 - **`BleHubClient`** is the base class for the generated proxies. `IBleHubClient<TContract>` exposes:
   - `Hub`
   - `Status`, plus the `StatusChanged`, `Connected` and `Disconnected` events
-  - `Discover()`: scans by the client's `ServiceUuid`, so it finds every host of this library (on that UUID), whichever hubs it runs
+  - `Discover()`: scans by the client's `ServiceUuid`, so it finds every host of this library (on that UUID), whichever hubs it runs. It leaves out the app's own host: a scan on the device that is advertising can report that advertisement. The host records what it advertises (service UUID and local name) in `LocalHubAdvertisement`, a per-container singleton shared with the clients, and `Discover()` drops a result with the same UUID and the same advertised name. A result with no name is always kept
   - `Connect(host, options, ct)`:
     1. Connect.
-    2. Request MTU 512.
+    2. Request the largest ATT MTU, 517 (`FrameCodec.MaxAttMtu`). Android negotiates it; Apple negotiates on its own and can't be asked, so its MTU stands. A failed request keeps the current MTU. The result is logged.
     3. Subscribe to notifications.
     4. Handshake.
     5. Become `Ready`.
@@ -323,6 +326,8 @@ The core package targets `net10.0`. The host and client packages target `net10.0
 | Disconnect reasons | Typed `HubDisconnectReason` + optional message, on both sides (2026-10-08). The client says goodbye with a `Disconnect` frame so the host can tell leaving from a dropped link. Additive JSON, protocol version stays 1 |
 | Renaming (2026-10-09) | Clients and the host rename without reconnecting, through additive `Rename` / `HostRenamed` frames. The protocol version stays 1, because older peers refuse or ignore the frames cleanly |
 | Telling other clients about a rename | App logic in the hub (`OnRenamedAsync` pushes to `Clients.Others`). The library gives the hook and `ClientRenamed`, and pushes nothing itself |
+| MTU (2026-10-10) | Every new BLE connection asks for ATT MTU 517, the maximum. Inside blehubs MTU means ATT MTU; Shiny's payload size is converted at the BLE adapters |
+| Own advertisement (2026-10-10) | `Discover()` drops the app's own host, matched by service UUID and advertised local name while it advertises. The 31 byte advertisement has no room for an id beside the 128-bit UUID, so the name is the only signal: another host with the same name is hidden while this app advertises, and a nameless advertisement is never treated as this app's |
 | Other transports (§13) | Hidden host and client seams in this repo. Wi-Fi itself (Switchboard, mDNS, transport choice) lives in Shiny.UniversalHubs, its own repo, which references this one through NuGet |
 
 ## 10. Status
@@ -348,6 +353,9 @@ The core package targets `net10.0`. The host and client packages target `net10.0
   - Removed: `AddBleHub`, `ConfigureBleHubHost`, `BleHubProtocolOptions.ServiceUuid`. `ConfigureBleHubProtocol` and `AddBleHubCore` are internal.
   - The host and client packages multi-target and register the platform BLE stacks. On Apple the client turns off iOS's background alerts.
   - 103 tests pass (new `RegistrationTests`).
+- **2026-10-10**: `Discover()` leaves out the app's own host advertisement (`LocalHubAdvertisement`, set by `BleHubHost` when it advertises, cleared when it stops). Found on devices: an app hosting and scanning listed itself. 109 tests pass (new `DiscoveryTests`, with a fake `IBleManager`).
+  - **Not yet verified:** on hardware, that a hosting phone and Mac no longer list themselves and still see each other.
+- **2026-10-10**: MTU. The client asks for ATT MTU 517 (was 512) on every new BLE connection and logs what it got. Fixed a unit bug: Shiny's `IPeripheral.Mtu` is the payload size, and blehubs used it as the ATT MTU on both sides, so every frame was 3 bytes smaller than the link allowed. It is converted at the adapters now; `BleHubConnectedClient.Mtu` reports the ATT MTU. Wire compatible. 114 tests pass (new `MtuTests`, and a host frame-size test).
 
 ## 11. Future
 
@@ -364,6 +372,7 @@ The core package targets `net10.0`. The host and client packages target `net10.0
 - BLE needs **two physical devices**. The iOS simulator has no Bluetooth.
 - When an iOS host is backgrounded, it advertises only through the overflow area and without a local name. This is out of scope (foreground only).
 - 31-byte advertisements: a 128-bit UUID plus a long local name may not fit. Keep `LocalName` short.
+- Telling the app's own advertisement apart relies on the local name. Another host with the same name is hidden from discovery while this app advertises, so give hosts distinct names.
 - Throughput with write-with-response is a few KB/s, which is fine for game- and command-sized messages.
 
 ## 13. Other transports

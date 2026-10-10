@@ -73,6 +73,9 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
                 ? ble.Scan(new ScanConfig(this.ServiceUuid))
                 : Observable.Throw<ScanResult>(new BleHubException($"Bluetooth is not available ({access})"))
             )
+            // a scan on the device that is hosting can report the device's own advertisement - checked per result, since
+            // this app's host can start or stop advertising mid-scan
+            .Where(x => this.services.LocalAdvertisement?.IsLocal(this.ServiceUuid, x.AdvertisementData?.LocalName) != true)
             .Select(x => new BleHubHostInfo(x.Peripheral, x.AdvertisementData?.LocalName ?? x.Peripheral.Name, x.Rssi));
     }
 
@@ -93,14 +96,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
             conn.OwnsBleConnection = true;
 
             await p.ConnectAsync(new ConnectionConfig(false), cancellationToken).ConfigureAwait(false);
-            try
-            {
-                await p.TryRequestMtuAsync(512, cancelToken: cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                this.logger?.LogDebug(ex, "MTU request failed - continuing with {Mtu}", p.Mtu);
-            }
+            var attMtu = await NegotiateMtu(p, this.logger, cancellationToken).ConfigureAwait(false);
 
             // fail fast if the host does not serve this hub
             await p.GetCharacteristicAsync(this.ServiceUuid, this.CharacteristicUuid, cancellationToken).ConfigureAwait(false);
@@ -124,7 +120,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
                 .Subscribe(__ => { _ = this.Teardown(new HubDisconnect(HubDisconnectReason.ClientTimeout), false); }));
 
             conn.Write = (frame, ct) => p.WriteCharacteristicAsync(this.ServiceUuid, this.CharacteristicUuid, frame, true, ct, 10000);
-            await this.Complete(conn, p.Mtu, options, cancellationToken).ConfigureAwait(false);
+            await this.Complete(conn, attMtu, options, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -135,6 +131,30 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         {
             this.connectLock.Release();
         }
+    }
+
+
+    /// <summary>
+    /// Asks for the largest ATT MTU (<see cref="FrameCodec.MaxAttMtu"/>) on a new BLE connection, so hub messages go in as
+    /// few frames as possible. Android negotiates what is asked for; Apple platforms negotiate on their own and can't be
+    /// asked, so the current MTU stands. Returns the ATT MTU - Shiny reports the payload size (ATT MTU minus the header).
+    /// </summary>
+    internal static async Task<int> NegotiateMtu(IPeripheral peripheral, ILogger? logger, CancellationToken cancellationToken)
+    {
+        var payload = peripheral.Mtu;
+        try
+        {
+            payload = await peripheral.TryRequestMtuAsync(FrameCodec.MaxAttMtu, cancelToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger?.LogDebug(ex, "MTU request failed - continuing with the current MTU");
+            payload = peripheral.Mtu;
+        }
+
+        var attMtu = payload + BleConstants.AttHeaderSize;
+        logger?.LogInformation("ATT MTU {Mtu} (asked for {Requested}, {Payload} byte frames)", attMtu, FrameCodec.MaxAttMtu, FrameCodec.GetFrameSize(attMtu));
+        return attMtu;
     }
 
 

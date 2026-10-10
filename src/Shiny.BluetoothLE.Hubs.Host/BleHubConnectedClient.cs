@@ -26,6 +26,10 @@ public sealed class BleHubConnectedClient
     public string? Name { get; internal set; }
     public string? AppVersion { get; }
     public IReadOnlyDictionary<string, string> Properties { get; }
+    /// <summary>
+    /// The ATT MTU of the client's BLE link when it connected (frames are this minus 3 bytes), 0 for a client on another
+    /// transport
+    /// </summary>
     public int Mtu { get; }
 
     /// <summary>

@@ -45,6 +45,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
     readonly BleHubHostOptions hostOptions;
     readonly IServiceProvider services;
     readonly ILogger<BleHubHost>? logger;
+    readonly LocalHubAdvertisement? localAdvertisement;
     readonly string serviceUuid;
     readonly Dictionary<Type, HubRuntime> runtimes = new();
     readonly Dictionary<HubRuntime, IGattCharacteristic> characteristics = new();
@@ -60,10 +61,12 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
         BleHubProtocolOptions options,
         IBleHubSerializer serializer,
         IServiceProvider services,
-        ILoggerFactory? loggerFactory = null
+        ILoggerFactory? loggerFactory = null,
+        LocalHubAdvertisement? localAdvertisement = null
     )
     {
         this.hosting = hosting;
+        this.localAdvertisement = localAdvertisement;
         this.hostOptions = hostOptions;
         this.services = services;
         this.logger = loggerFactory?.CreateLogger<BleHubHost>();
@@ -284,9 +287,13 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
             return;
 
         if (this.hosting.IsAdvertising)
+        {
             this.hosting.StopAdvertising();
+            this.localAdvertisement?.Clear();
+        }
 
         await this.hosting.StartAdvertising(new AdvertisementOptions(this.hostOptions.LocalName, [this.serviceUuid])).ConfigureAwait(false);
+        this.localAdvertisement?.Set(this.serviceUuid, this.hostOptions.LocalName);
     }
 
 
@@ -303,6 +310,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
         if (this.hosting.IsAdvertising)
             this.hosting.StopAdvertising();
 
+        this.localAdvertisement?.Clear();
         return Task.CompletedTask;
     }
 
@@ -315,7 +323,8 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
             return Task.CompletedTask;
         }
 
-        var ok = runtime.OnFrame(request.Peripheral.Uuid, request.Peripheral.Mtu, request.Peripheral, request.Data);
+        // Shiny reports the payload size (ATT MTU minus the header) - the runtime works in ATT MTU
+        var ok = runtime.OnFrame(request.Peripheral.Uuid, request.Peripheral.Mtu + BleConstants.AttHeaderSize, request.Peripheral, request.Data);
         Respond(request, ok ? GattState.Success : GattState.Failure);
         return Task.CompletedTask;
     }

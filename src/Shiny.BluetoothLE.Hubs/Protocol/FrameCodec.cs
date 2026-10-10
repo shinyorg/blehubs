@@ -34,6 +34,17 @@ public static class FrameCodec
     /// </summary>
     public const int MaxFrameSize = 512;
 
+    /// <summary>
+    /// The ATT header that precedes every write and notification
+    /// </summary>
+    public const int AttHeaderSize = 3;
+
+    /// <summary>
+    /// The largest ATT MTU there is (517 - Android's GATT_MAX_MTU_SIZE). The client asks for it on every new BLE connection;
+    /// frames still stop at <see cref="MaxFrameSize"/>.
+    /// </summary>
+    public const int MaxAttMtu = 517;
+
     public const byte FlagFirst = 0x01;
     public const byte FlagLast = 0x02;
 
@@ -41,9 +52,10 @@ public static class FrameCodec
 
 
     /// <summary>
-    /// Gets the usable frame size for a negotiated ATT MTU (3 bytes of ATT header are subtracted)
+    /// Gets the usable frame size for a negotiated ATT MTU (3 bytes of ATT header are subtracted). Pass the ATT MTU, not
+    /// Shiny's IPeripheral.Mtu - that is already the payload size.
     /// </summary>
-    public static int GetFrameSize(int mtu) => Math.Clamp(mtu - 3, MinFrameSize, MaxFrameSize);
+    public static int GetFrameSize(int mtu) => Math.Clamp(mtu - AttHeaderSize, MinFrameSize, MaxFrameSize);
 
 
     /// <summary>
