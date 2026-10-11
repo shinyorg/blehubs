@@ -100,7 +100,7 @@ Correlated, chunked notifications avoid all three problems.
 
 Every write or notification is one **frame**, at most `MTU - 3` bytes (capped at 512).
 
-- **Units:** inside blehubs "MTU" is always the ATT MTU (`FrameCodec.GetFrameSize(attMtu)`, `BleHubConnectedClient.Mtu`). Shiny's `IPeripheral.Mtu`, on both the client and the host, is the payload size (ATT MTU minus 3), so the BLE adapters add `BleConstants.AttHeaderSize` where it enters (`BleHubClient.Connect`, `BleHubHost.OnWrite`). Until 1.1.1 they didn't, and frames came out 3 bytes short.
+- **Units:** inside blehubs "MTU" is always the ATT MTU (`FrameCodec.GetFrameSize(attMtu)`, `BleHubConnectedClient.Mtu`). Shiny's `IPeripheral.Mtu`, on both the client and the host, is the payload size (ATT MTU minus 3), so the BLE adapters add `BleConstants.AttHeaderSize` where it enters (`BleHubClient.Connect`, `BleHubHost.OnWrite`). Before 1.2 they didn't, and frames came out 3 bytes short.
 - Receivers reassemble from each frame's header, never from a frame size, so peers with different frame sizes interoperate. Frame size changes are wire compatible.
 
 ```
