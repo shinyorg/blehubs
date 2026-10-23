@@ -118,7 +118,7 @@ The body is `[name length:1][name utf8][payload]`. Frames are reassembled per (p
 | Value | Kind | Dir | Name | Payload |
 |---|---|---|---|---|
 | 0x01 | Handshake | C→H | – | `HandshakeInfo` (protocol version, client name, app version, properties) |
-| 0x02 | HandshakeAck | H→C | – | `HandshakeAck` (accepted, reason, host name, file PSM, file secure) |
+| 0x02 | HandshakeAck | H→C | – | `HandshakeAck` (accepted, reason, host name, file PSM, file secure, media PSM, media secure, media token, media max packet size) |
 | 0x10 | Invoke | C→H | method | arguments |
 | 0x12 | StreamInvoke | C→H | method | arguments |
 | 0x13 | Cancel | C→H | – | (cancels the invocation or stream with that id) |
@@ -144,6 +144,10 @@ protocol version stays at 1.
   reporting a timeout. An unsubscribe with no goodbye is a `ClientTimeout`, because iOS and Android both report a
   dropped central as an unsubscribe. An older host answers this frame with an `Error` frame, which the leaving client
   ignores, and still sees the unsubscribe.
+
+**Media channel fields** (1.4.0): `HandshakeAck` gained `MediaChannelPsm`, `MediaChannelSecure`, `MediaToken` and
+`MediaMaxPacketSize` (§6b). They are additive JSON with defaults (0 / false / null / 0), so the protocol version stays at
+1: an older client ignores them, and an ack from an older host reads as "no media channels".
 
 **Rename**: `RenameInfo` is `{ Name }`. Both frames are additive, so the protocol version stays at 1.
 - **Client → host** (`Rename`): the host runs `ValidateClient` with the new name (and the handshake's app version and
@@ -273,6 +277,48 @@ Files don't go through hub framing. They use a separate L2CAP channel, and the c
 - **Platforms**: iOS/macOS, and Android API 29+. Elsewhere the host serves PSM 0 and logs a warning.
 - **Identifying the client**: the L2CAP peer is matched to the hub's connected client by peer id where possible.
 
+## 6b. Media channels (L2CAP, 1.4.0)
+
+An ordered, bidirectional packet pipe per hub connection, for live audio and video (Shiny.UniversalHubs builds calls on
+it). It skips hub framing and the serializer: packets are raw bytes.
+
+- **API** (`IBleHubMediaChannel : IAsyncDisposable`, core package): `ConnectionId` (host side; null on the client),
+  `MaxPacketSize`, `IsOpen`, `ValueTask Send(ReadOnlyMemory<byte>, ct)`, `IAsyncEnumerable<ReadOnlyMemory<byte>>
+  Receive(ct)`, `Task Completion`.
+  - `Send` is serialized: packets go out whole and in call order. A packet over `MaxPacketSize` throws `ArgumentException`
+    (the channel stays open). Sending on a closed channel throws `BleHubException`. A send that fails or is cancelled
+    after it started writing closes the channel, because the far side can't find the next frame boundary in half a frame.
+  - `Receive` allows one reader at a time (a second concurrent one throws `InvalidOperationException`) and completes when
+    the channel closes, after draining what arrived. Packets that arrive before anyone reads are buffered (unbounded).
+  - `Completion` completes, never faults, when the channel closes for any reason.
+- **Host**: `BleHubHostOptions.EnableMediaChannels(maxPacketSize = 128 KB, secure = false)` opens a second L2CAP PSM
+  (`IBleHostingManager.OpenL2Cap`) with the shared infrastructure, beside the file server, and closes it when the last
+  hub stops. One PSM serves every hub; the token says which hub and client a channel belongs to. If L2CAP is unavailable
+  the hubs still start, with PSM 0, and a warning is logged.
+  - `IHubContext<THub>.MediaChannelOpened` (`BleHubMediaChannelEventArgs(Client, Channel)`) and
+    `GetMediaChannel(connectionId)` (null when none is open).
+  - One channel per client. A new one replaces (and closes) the old.
+  - A client's channel is closed when it disconnects, drops, is disconnected, or the hub stops (`OnPeerGone`).
+- **Client**: `IBleHubConnection.CanOpenMediaChannel` and `OpenMediaChannel(ct)`, serialized, returning the open channel
+  when there is one. It closes when the connection tears down. `NotSupportedException` when the host or device can't;
+  `BleHubException` when the host refuses.
+- **Opening** over BLE:
+  1. The handshake ack of an accepted client carries the media PSM, the secure flag, `MediaMaxPacketSize` and a
+     `MediaToken`: 16 random bytes as lowercase hex, issued once per connection and kept for its life (so a closed
+     channel can be reopened).
+  2. The client opens the L2CAP channel on that PSM and sends the token's UTF-8 bytes as its first frame.
+  3. The host compares it (fixed time) with the tokens of its connected BLE clients across every hub. On a match it
+     answers one frame `[0x01]`, then attaches the channel to that client and raises `MediaChannelOpened`. The answer goes
+     out before the hub hears of the channel, so nothing the hub sends can get ahead of it. Otherwise, or after 10 s with
+     no token, it closes the channel.
+  4. The client waits up to `RequestTimeout` for `[0x01]`. Anything else, or the channel closing, is a refusal.
+- **Framing**: `[u32 LE length][bytes]` on the L2CAP byte stream (`MediaFrameCodec`), the token and the answer included.
+  Writes are split into pieces of at most 4096 bytes, each its own array. A length over `MaxPacketSize` is a protocol
+  error that closes the channel. The transport-free channel (`FramedMediaChannel`, internal) is shared by host and
+  client and fed from the L2CAP `DataReceived` observable, subscribed as soon as the channel opens.
+- **Identifying the client** is by token alone. The L2CAP peer identifier isn't compared with the GATT central's, since
+  platforms don't promise they match.
+
 ## 7. Repo layout
 
 ```
@@ -328,6 +374,7 @@ The core package targets `net10.0`. The host and client packages target `net10.0
 | Telling other clients about a rename | App logic in the hub (`OnRenamedAsync` pushes to `Clients.Others`). The library gives the hook and `ClientRenamed`, and pushes nothing itself |
 | MTU (2026-10-10) | Every new BLE connection asks for ATT MTU 517, the maximum. Inside blehubs MTU means ATT MTU; Shiny's payload size is converted at the BLE adapters |
 | Own advertisement (2026-10-10) | `Discover()` drops the app's own host, matched by service UUID and advertised local name while it advertises. The 31 byte advertisement has no room for an id beside the 128-bit UUID, so the name is the only signal: another host with the same name is hidden while this app advertises, and a nameless advertisement is never treated as this app's |
+| Media channels (2026-10-23) | A packet pipe per connection on its own L2CAP PSM (§6b), not hub frames: GATT write-with-response is a few KB/s, and media wants raw bytes with no serializer. Gated by a random token from the handshake ack. Additive ack fields, protocol version stays 1. Other transports carry it through seams (§13) |
 | Other transports (§13) | Hidden host and client seams in this repo. Wi-Fi itself (Switchboard, mDNS, transport choice) lives in Shiny.UniversalHubs, its own repo, which references this one through NuGet |
 
 ## 10. Status
@@ -356,6 +403,14 @@ The core package targets `net10.0`. The host and client packages target `net10.0
 - **2026-10-10**: `Discover()` leaves out the app's own host advertisement (`LocalHubAdvertisement`, set by `BleHubHost` when it advertises, cleared when it stops). Found on devices: an app hosting and scanning listed itself. 109 tests pass (new `DiscoveryTests`, with a fake `IBleManager`).
   - **Not yet verified:** on hardware, that a hosting phone and Mac no longer list themselves and still see each other.
 - **2026-10-10**: MTU. The client asks for ATT MTU 517 (was 512) on every new BLE connection and logs what it got. Fixed a unit bug: Shiny's `IPeripheral.Mtu` is the payload size, and blehubs used it as the ATT MTU on both sides, so every frame was 3 bytes smaller than the link allowed. It is converted at the adapters now; `BleHubConnectedClient.Mtu` reports the ATT MTU. Wire compatible. 114 tests pass (new `MtuTests`, and a host frame-size test).
+
+- **2026-10-23** (1.4.0): media channels (§6b). `IBleHubMediaChannel`, `BleHubHostOptions.EnableMediaChannels`,
+  `IHubContext.MediaChannelOpened` / `GetMediaChannel`, `IBleHubConnection.CanOpenMediaChannel` / `OpenMediaChannel`,
+  `MediaFrameCodec`, and seams for other transports (§13). `HandshakeAck` gained four additive fields; wire compatible. The
+  fake hosting manager gained `OpenL2Cap` and an in-memory L2CAP link that re-chunks writes. 143 tests pass (new
+  `MediaFrameCodecTests`, `MediaChannelTests`, and media cases in `ExternalTransportTests`).
+  - **Not yet verified:** on hardware, a media channel between an iOS and an Android device (both directions), secure
+    channels on Android, and throughput with 128 KB packets.
 
 ## 11. Future
 
@@ -395,3 +450,11 @@ Renames cross the seams too:
   order with `Push`. It is a default interface method (no-op), so existing channels keep compiling.
 - client: `IBleHubClientTransport.Rename(name, ct)` (the default throws `NotSupportedException`), and
   `IBleHubClientTransportEvents.HostRenamed(hostName)`, called in order with `Pushed`.
+
+Media channels cross the seams too (1.4.0):
+- client: `IBleHubClientTransport.CanOpenMediaChannel` (default false) and `OpenMediaChannel(ct)` (the default throws
+  `NotSupportedException`). `BleHubClient.OpenMediaChannel` routes to it when connected through `ConnectExternal`,
+  serializes it, reuses an open channel, and closes the channel when the connection ends.
+- host: `IBleHubTransportEndpoint.MediaChannelOpened(connectionId, channel)`, called once the transport has checked its
+  own token. It raises `IHubContext.MediaChannelOpened` and closes the channel when that client goes. It returns false
+  for an unknown client, and the caller closes the channel.

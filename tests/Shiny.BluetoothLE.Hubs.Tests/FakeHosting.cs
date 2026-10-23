@@ -45,7 +45,47 @@ public class FakeHostingManager : IBleHostingManager
         this.Log.Add("stop-advertising");
     }
 
-    public Task<L2CapInstance> OpenL2Cap(bool secure, Action<L2CapChannel> onOpen) => throw new NotSupportedException();
+    readonly Dictionary<ushort, (bool Secure, Action<L2CapChannel> OnOpen)> l2capListeners = new();
+    ushort nextPsm = 0x80;
+
+    /// <summary>
+    /// When set, OpenL2Cap fails like a device without L2CAP
+    /// </summary>
+    public bool FailL2Cap { get; set; }
+
+    public IReadOnlyCollection<ushort> L2CapListeners => this.l2capListeners.Keys;
+
+    public Task<L2CapInstance> OpenL2Cap(bool secure, Action<L2CapChannel> onOpen)
+    {
+        if (this.FailL2Cap)
+            throw new NotSupportedException("No L2CAP here");
+
+        var psm = this.nextPsm++;
+        this.l2capListeners[psm] = (secure, onOpen);
+        this.Log.Add($"open-l2cap:{psm}:{secure}");
+        return Task.FromResult(new L2CapInstance(psm, () =>
+        {
+            this.l2capListeners.Remove(psm);
+            this.Log.Add($"close-l2cap:{psm}");
+        }));
+    }
+
+    /// <summary>
+    /// A central opens an L2CAP channel to a listening PSM: the host's end goes to the listener, the central's end is
+    /// returned
+    /// </summary>
+    public FakeL2CapLink ConnectL2Cap(ushort psm, string centralId, bool secure = false)
+    {
+        if (!this.l2capListeners.TryGetValue(psm, out var listener))
+            throw new InvalidOperationException($"Nothing listens on PSM {psm}");
+        if (listener.Secure != secure)
+            throw new InvalidOperationException($"PSM {psm} listens {(listener.Secure ? "secure" : "insecure")}");
+
+        var link = new FakeL2CapLink(psm, centralId, "host");
+        listener.OnOpen(link.Host);
+        return link;
+    }
+
     public Task AdvertiseBeacon(Guid uuid, ushort major, ushort minor, sbyte? txpower = null) => throw new NotSupportedException();
 
     public Task<IGattService> AddService(string uuid, bool primary, Action<IGattServiceBuilder> serviceBuilder)
@@ -155,4 +195,56 @@ public class FakeCentral(string uuid, int mtu = 185) : HostedPeripheral
     public string Uuid { get; } = uuid;
     public int Mtu { get; } = mtu;
     public object? Context { get; set; }
+}
+
+
+/// <summary>
+/// Both ends of an in-memory L2CAP channel. Like a real one it is a byte stream: each write reaches the other end in pieces
+/// of at most <see cref="MaxDelivery"/> bytes. Disposing either end closes both.
+/// </summary>
+public sealed class FakeL2CapLink
+{
+    readonly System.Reactive.Subjects.Subject<byte[]> toHost = new();
+    readonly System.Reactive.Subjects.Subject<byte[]> toCentral = new();
+    readonly object gate = new();
+    int closed;
+
+    public FakeL2CapLink(ushort psm, string centralId, string hostId)
+    {
+        this.Host = new L2CapChannel(psm, centralId, data => this.Deliver(data, this.toCentral, () => this.HostWrites++), this.toHost, this.Close);
+        this.Central = new L2CapChannel(psm, hostId, data => this.Deliver(data, this.toHost, () => this.CentralWrites++), this.toCentral, this.Close);
+    }
+
+    public L2CapChannel Host { get; }
+    public L2CapChannel Central { get; }
+    public int MaxDelivery { get; set; } = 251;
+    public int HostWrites { get; private set; }
+    public int CentralWrites { get; private set; }
+    public bool IsClosed => Volatile.Read(ref this.closed) == 1;
+
+    IObservable<System.Reactive.Unit> Deliver(byte[] data, System.Reactive.Subjects.Subject<byte[]> to, Action count)
+    {
+        lock (this.gate)
+        {
+            if (this.IsClosed)
+                return System.Reactive.Linq.Observable.Throw<System.Reactive.Unit>(new IOException("L2CAP channel closed"));
+
+            count();
+            for (var offset = 0; offset < data.Length; offset += this.MaxDelivery)
+                to.OnNext(data.AsSpan(offset, Math.Min(this.MaxDelivery, data.Length - offset)).ToArray());
+        }
+        return System.Reactive.Linq.Observable.Return(System.Reactive.Unit.Default);
+    }
+
+    public void Close()
+    {
+        if (Interlocked.Exchange(ref this.closed, 1) == 1)
+            return;
+
+        lock (this.gate)
+        {
+            this.toHost.OnCompleted();
+            this.toCentral.OnCompleted();
+        }
+    }
 }

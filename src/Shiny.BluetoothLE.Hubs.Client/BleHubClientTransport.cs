@@ -42,6 +42,18 @@ public interface IBleHubClientTransport
     /// The app is leaving - tell the host and close. Not called when the transport reported the close itself.
     /// </summary>
     Task Close(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Whether this connection can open a media channel
+    /// </summary>
+    bool CanOpenMediaChannel => false;
+
+    /// <summary>
+    /// Opens this connection's media channel. BleHubClient serializes the calls, returns an open channel it already has
+    /// instead of calling again, and closes the channel when the connection ends.
+    /// </summary>
+    Task<IBleHubMediaChannel> OpenMediaChannel(CancellationToken cancellationToken)
+        => throw new NotSupportedException("This transport can't open a media channel");
 }
 
 

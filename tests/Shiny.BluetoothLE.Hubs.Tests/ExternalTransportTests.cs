@@ -1,3 +1,4 @@
+using System.Reactive.Threading.Tasks;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using Shiny.BluetoothLE.Hubs.Protocol;
@@ -330,10 +331,108 @@ public class ExternalTransportTests : IAsyncLifetime
     }
 
 
+    [Fact]
+    public async Task ExternalMediaChannelReachesTheHub()
+    {
+        var opened = new List<BleHubMediaChannelEventArgs>();
+        this.runtime.MediaChannelOpened += (_, e) => opened.Add(e);
+        var (_, client, transport) = await this.Connect();
+
+        Assert.True(client.CanOpenMediaChannel);
+        var clientChannel = await client.OpenMediaChannel();
+        Assert.Same(clientChannel, await client.OpenMediaChannel());
+        Assert.Equal(1, transport.MediaOpens);
+
+        var e = Assert.Single(opened);
+        Assert.Equal("wifi-1", e.Client.Id);
+        Assert.Same(e.Channel, this.runtime.GetMediaChannel("wifi-1"));
+
+        await clientChannel.Send(new byte[] { 1, 2 });
+        await foreach (var packet in e.Channel.Receive())
+        {
+            Assert.Equal(new byte[] { 1, 2 }, packet.ToArray());
+            break;
+        }
+
+        // the client's connection drops - the hub closes the channel it was given
+        transport.Lose("gone");
+        await e.Channel.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await clientChannel.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Null(this.runtime.GetMediaChannel("wifi-1"));
+    }
+
+
+    [Fact]
+    public async Task ExternalMediaChannelClosesWhenTheClientDisconnects()
+    {
+        var (_, client, transport) = await this.Connect();
+        var clientChannel = await client.OpenMediaChannel();
+        var hostChannel = this.runtime.GetMediaChannel("wifi-1")!;
+
+        await client.Disconnect();
+        await hostChannel.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await clientChannel.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+
+    [Fact]
+    public async Task MediaChannelForAnUnknownClientIsRefused()
+    {
+        var link = new FakeL2CapLink(0, "x", "host");
+        await using var channel = FramedMediaChannel.Over(link.Host.DataReceived, 100, (b, ct) => Task.CompletedTask, link.Host.Dispose);
+
+        Assert.False(((IBleHubTransportEndpoint)this.runtime).MediaChannelOpened("nobody", channel));
+        Assert.Null(this.runtime.GetMediaChannel("nobody"));
+    }
+
+
+    [Fact]
+    public async Task TransportsWithoutMediaChannelsSayNo()
+    {
+        var client = this.CreateClient();
+        await client.ConnectExternal(events => new NoMediaTransport(new MemoryTransport(this.runtime, "wifi-9", events)), new BleHubConnectOptions("Old"));
+
+        Assert.False(client.CanOpenMediaChannel);
+        await Assert.ThrowsAsync<NotSupportedException>(() => client.OpenMediaChannel());
+    }
+
+
+    /// <summary>
+    /// A transport written before media channels - it relies on the interface's defaults
+    /// </summary>
+    sealed class NoMediaTransport(MemoryTransport inner) : IBleHubClientTransport
+    {
+        public Task<HandshakeAck> Handshake(HandshakeInfo info, CancellationToken cancellationToken) => inner.Handshake(info, cancellationToken);
+        public Task<ReadOnlyMemory<byte>> Invoke(string method, byte[] arguments, CancellationToken cancellationToken) => inner.Invoke(method, arguments, cancellationToken);
+        public IAsyncEnumerable<ReadOnlyMemory<byte>> Stream(string method, byte[] arguments, CancellationToken cancellationToken) => inner.Stream(method, arguments, cancellationToken);
+        public bool CanTransferFiles => false;
+        public Task<L2CapTransferResult> Upload(Stream source, long length, string remoteFileName, IProgress<TransferProgress>? progress, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<L2CapTransferResult> Download(string remoteFileName, Stream destination, IProgress<TransferProgress>? progress, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task Close(CancellationToken cancellationToken) => inner.Close(cancellationToken);
+    }
+
+
     sealed class MemoryTransport(HubRuntime runtime, string connectionId, IBleHubClientTransportEvents events)
         : IBleHubClientTransport, IBleHubPeerChannel
     {
         public bool ClosedByApp { get; private set; }
+        public int MediaOpens { get; private set; }
+        public bool CanOpenMediaChannel => true;
+
+        public Task<IBleHubMediaChannel> OpenMediaChannel(CancellationToken cancellationToken)
+        {
+            this.MediaOpens++;
+            var link = new FakeL2CapLink(0, connectionId, "host");
+            var hostEnd = FramedMediaChannel.Over(link.Host.DataReceived, 1024, (b, _) => link.Host.Write(b).ToTask(), link.Host.Dispose);
+            var clientEnd = FramedMediaChannel.Over(link.Central.DataReceived, 1024, (b, _) => link.Central.Write(b).ToTask(), link.Central.Dispose);
+
+            if (!((IBleHubTransportEndpoint)runtime).MediaChannelOpened(connectionId, hostEnd))
+            {
+                link.Close();
+                throw new BleHubException("Unknown client");
+            }
+            return Task.FromResult<IBleHubMediaChannel>(clientEnd);
+        }
         public Dictionary<string, string> Files { get; } = new();
         public bool CanTransferFiles => true;
 

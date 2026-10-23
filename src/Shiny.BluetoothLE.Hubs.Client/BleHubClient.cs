@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Reactive.Linq;
+using System.Reactive.Threading.Tasks;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     readonly ILogger? logger;
     readonly HubClientProtocol protocol;
     readonly SemaphoreSlim connectLock = new(1, 1);
+    readonly SemaphoreSlim mediaLock = new(1, 1);
     Connection? connection;
 
 
@@ -51,6 +53,13 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         && (this.connection?.External is { } external
             ? external.CanTransferFiles
             : this.connection?.Ack?.FileTransferPsm > 0 && this.connection.Host?.Peripheral.IsL2CapAvailable() == true);
+
+    public bool CanOpenMediaChannel =>
+        this.Status == BleHubClientStatus.Connected
+        && this.connection is { } conn
+        && (conn.External is { } external
+            ? external.CanOpenMediaChannel
+            : conn.Ack is { MediaChannelPsm: > 0, MediaToken: not null } && conn.OpenL2Cap != null);
 
     /// <summary>
     /// The transport carrying this connection when it isn't BLE, otherwise null
@@ -120,6 +129,9 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
                 .Subscribe(__ => { _ = this.Teardown(new HubDisconnect(HubDisconnectReason.ClientTimeout), false); }));
 
             conn.Write = (frame, ct) => p.WriteCharacteristicAsync(this.ServiceUuid, this.CharacteristicUuid, frame, true, ct, 10000);
+            if (p.IsL2CapAvailable())
+                conn.OpenL2Cap = (psm, secure, ct) => p.OpenL2CapChannelAsync(psm, secure, ct);
+
             await this.Complete(conn, attMtu, options, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -161,7 +173,13 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
     /// <summary>
     /// Connects over a caller supplied transport (tests / in-memory). Frames from the host go to <see cref="ReceiveFrame"/>.
     /// </summary>
-    internal async Task ConnectTransport(Func<byte[], CancellationToken, Task> write, int mtu, BleHubConnectOptions? options, CancellationToken cancellationToken)
+    internal async Task ConnectTransport(
+        Func<byte[], CancellationToken, Task> write,
+        int mtu,
+        BleHubConnectOptions? options,
+        CancellationToken cancellationToken,
+        Func<ushort, bool, CancellationToken, Task<L2CapChannel>>? openL2Cap = null
+    )
     {
         await this.connectLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -169,6 +187,7 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
             this.AssertDisconnected();
             var conn = this.Begin(null);
             conn.Write = write;
+            conn.OpenL2Cap = openL2Cap;
             await this.Complete(conn, mtu, options, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -322,6 +341,97 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
 
         var (p, ack) = this.AssertFiles();
         return await p.DownloadFile(ack.FileTransferPsm, remoteFileName, localFilePath, ack.FileTransferSecure, ToAction(progress), null, cancellationToken).ConfigureAwait(false);
+    }
+
+
+    public async Task<IBleHubMediaChannel> OpenMediaChannel(CancellationToken cancellationToken = default)
+    {
+        this.AssertConnected();
+        var conn = this.connection ?? throw new BleHubDisconnectedException("Not connected to a host");
+
+        await this.mediaLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (conn.Media is { IsOpen: true } open)
+                return open;
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, conn.Lifetime.Token);
+            IBleHubMediaChannel media;
+            try
+            {
+                if (conn.External is { } external)
+                {
+                    if (!external.CanOpenMediaChannel)
+                        throw new NotSupportedException("The host does not serve media channels");
+
+                    media = await external.OpenMediaChannel(cts.Token).ConfigureAwait(false);
+                }
+                else
+                {
+                    media = await this.OpenL2CapMedia(conn, cts.Token).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new BleHubDisconnectedException("The connection to the host was closed", conn.CloseReason);
+            }
+
+            conn.Media = media;
+            // Teardown cancels the lifetime and then closes conn.Media - one of us sees the other
+            if (conn.Lifetime.IsCancellationRequested)
+            {
+                await media.DisposeAsync().ConfigureAwait(false);
+                throw new BleHubDisconnectedException("The connection to the host was closed", conn.CloseReason);
+            }
+            this.logger?.LogInformation("Media channel open (max packet {Size} bytes)", media.MaxPacketSize);
+            return media;
+        }
+        finally
+        {
+            this.mediaLock.Release();
+        }
+    }
+
+
+    async Task<IBleHubMediaChannel> OpenL2CapMedia(Connection conn, CancellationToken cancellationToken)
+    {
+        var ack = conn.Ack!;
+        if (ack.MediaChannelPsm == 0 || ack.MediaToken == null || ack.MediaMaxPacketSize < 1)
+            throw new NotSupportedException("The host does not serve media channels");
+
+        var open = conn.OpenL2Cap ?? throw new NotSupportedException("L2CAP is not available on this device");
+        var l2cap = await open(ack.MediaChannelPsm, ack.MediaChannelSecure, cancellationToken).ConfigureAwait(false);
+        var channel = FramedMediaChannel.Over(
+            l2cap.DataReceived,
+            ack.MediaMaxPacketSize,
+            (bytes, ct) => l2cap.Write(bytes).ToTask(ct),
+            l2cap.Dispose,
+            this.logger
+        );
+
+        try
+        {
+            await channel.SendControl(System.Text.Encoding.UTF8.GetBytes(ack.MediaToken), cancellationToken).ConfigureAwait(false);
+            byte[] answer;
+            try
+            {
+                answer = await channel.ReadControl(this.services.Options.RequestTimeout, cancellationToken).ConfigureAwait(false);
+            }
+            catch (BleHubException)
+            {
+                // the host closes the channel on a token it doesn't know
+                throw new BleHubException("The host refused the media channel");
+            }
+            if (answer is not [MediaFrameCodec.Accepted])
+                throw new BleHubException("The host refused the media channel");
+
+            return channel;
+        }
+        catch
+        {
+            await channel.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
 
@@ -520,6 +630,17 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         this.protocol.FailAll(new BleHubDisconnectedException("The connection to the host was closed", disconnect));
         conn.CloseReason = disconnect;
         conn.Lifetime.Cancel();
+        if (conn.Media is { } media)
+        {
+            try
+            {
+                await media.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                this.logger?.LogDebug(ex, "Media channel did not close cleanly");
+            }
+        }
 
         if (conn.External != null && cancelConnection)
         {
@@ -643,6 +764,14 @@ public abstract class BleHubClient : IBleHubConnection, IDisposable
         public bool OwnsBleConnection { get; set; }
         public Func<byte[], CancellationToken, Task>? Write { get; set; }
         public IBleHubClientTransport? External { get; set; }
+        public Func<ushort, bool, CancellationToken, Task<L2CapChannel>>? OpenL2Cap { get; set; }
+
+        IBleHubMediaChannel? media;
+        public IBleHubMediaChannel? Media
+        {
+            get => Volatile.Read(ref this.media);
+            set => Interlocked.Exchange(ref this.media, value);
+        }
         public CancellationTokenSource Lifetime { get; } = new();
         public HubDisconnect? CloseReason { get; set; }
         public List<IDisposable> Subscriptions { get; } = new();

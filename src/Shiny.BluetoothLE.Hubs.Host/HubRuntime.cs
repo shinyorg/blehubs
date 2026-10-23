@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Shiny.BluetoothLE.Hosting;
@@ -58,6 +60,13 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
 
     public ushort FileTransferPsm { get; set; }
     public bool FileTransferSecure { get; set; }
+
+    /// <summary>
+    /// The BLE media channel listener - 0 when media channels are off or unavailable
+    /// </summary>
+    public ushort MediaChannelPsm { get; set; }
+    public bool MediaChannelSecure { get; set; }
+    public int MediaMaxPacketSize { get; set; }
     public string? HostName { get; set; }
 
     public IEnumerable<HostPeer> Peers => this.peers.Values;
@@ -67,6 +76,7 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
     public event EventHandler<BleHubConnectedClient>? ClientConnected;
     public event EventHandler<BleHubClientDisconnectedEventArgs>? ClientDisconnected;
     public event EventHandler<BleHubClientRenamedEventArgs>? ClientRenamed;
+    public event EventHandler<BleHubMediaChannelEventArgs>? MediaChannelOpened;
 
 
     public BleHubConnectedClient? FindClient(string connectionId)
@@ -127,6 +137,7 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
             return;
 
         peer.Abort();
+        peer.CloseMedia();
         if (peer.Client == null)
             return;
 
@@ -295,7 +306,21 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
         else
             rejection = await this.Admit(peer, info).ConfigureAwait(false);
 
-        var ack = new HandshakeAck(rejection == null, rejection, this.HostName, this.FileTransferPsm, this.FileTransferSecure);
+        var media = rejection == null && this.MediaChannelPsm > 0;
+        if (media)
+            peer.MediaToken ??= Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16));
+
+        var ack = new HandshakeAck(
+            rejection == null,
+            rejection,
+            this.HostName,
+            this.FileTransferPsm,
+            this.FileTransferSecure,
+            media ? this.MediaChannelPsm : (ushort)0,
+            media && this.MediaChannelSecure,
+            media ? peer.MediaToken : null,
+            media ? this.MediaMaxPacketSize : 0
+        );
         await this.Send(peer, FrameKind.HandshakeAck, message.MessageId, null, ProtocolSerializer.Serialize(ack), this.lifetime.Token).ConfigureAwait(false);
 
         if (rejection != null)
@@ -510,6 +535,71 @@ internal sealed class HubRuntime : IGroupManager, IBleHubTransportEndpoint
     }
 
 
+    // ---- media channels ----
+
+    public IBleHubMediaChannel? GetMediaChannel(string connectionId)
+        => this.peers.TryGetValue(connectionId, out var peer) && peer.Media is { IsOpen: true } media ? media : null;
+
+
+    /// <summary>
+    /// Finds the BLE client a media token was issued to
+    /// </summary>
+    public string? FindMediaToken(ReadOnlySpan<byte> token)
+    {
+        foreach (var peer in this.peers.Values)
+        {
+            if (peer.Client != null && peer.Channel == null && peer.MediaToken is { } issued)
+            {
+                var bytes = Encoding.UTF8.GetBytes(issued);
+                if (CryptographicOperations.FixedTimeEquals(bytes, token))
+                    return peer.Id;
+            }
+        }
+        return null;
+    }
+
+
+    /// <summary>
+    /// Gives a connected client its media channel - replacing (and closing) any it had - and raises MediaChannelOpened.
+    /// Returns false when the client isn't connected.
+    /// </summary>
+    public bool AttachMediaChannel(string connectionId, IBleHubMediaChannel channel)
+    {
+        if (!this.peers.TryGetValue(connectionId, out var peer) || peer.Client is not { } client)
+            return false;
+
+        if (channel is FramedMediaChannel framed)
+            framed.ConnectionId = peer.Id;
+
+        var previous = peer.SetMedia(channel);
+        if (previous != null && !ReferenceEquals(previous, channel))
+            _ = previous.DisposeAsync().AsTask();
+
+        // the client may have left between the lookup and SetMedia - OnPeerGone either saw the channel or we see it gone
+        if (!this.peers.TryGetValue(connectionId, out var current) || !ReferenceEquals(current, peer))
+        {
+            peer.CloseMedia();
+            return false;
+        }
+
+        _ = channel.Completion.ContinueWith(_ => peer.ClearMedia(channel), TaskScheduler.Default);
+        this.logger?.LogInformation("Client {Client} opened a media channel on {Hub}", client, this.registration.HubType.Name);
+        try
+        {
+            this.MediaChannelOpened?.Invoke(this, new BleHubMediaChannelEventArgs(client, channel));
+        }
+        catch (Exception ex)
+        {
+            this.logger?.LogError(ex, "MediaChannelOpened handler failed for {Client}", client);
+        }
+        return true;
+    }
+
+
+    bool IBleHubTransportEndpoint.MediaChannelOpened(string connectionId, IBleHubMediaChannel channel)
+        => this.AttachMediaChannel(connectionId, channel);
+
+
     // ---- IBleHubTransportEndpoint: clients connected through another transport ----
 
     public BleHubMethodKind GetMethodKind(string method) => this.dispatcher.GetMethodKind(method);
@@ -675,6 +765,22 @@ internal sealed class HostPeer(string id, object? native, MessageReassembler rea
     public SemaphoreSlim SendLock { get; } = new(1, 1);
     public SemaphoreSlim RenameLock { get; } = new(1, 1);
     public BleHubConnectedClient? Client { get; set; }
+
+    /// <summary>
+    /// Issued in the handshake ack when the host serves BLE media channels - the client's first frame on that channel
+    /// </summary>
+    public string? MediaToken { get; set; }
+
+    IBleHubMediaChannel? media;
+    public IBleHubMediaChannel? Media => Volatile.Read(ref this.media);
+    public IBleHubMediaChannel? SetMedia(IBleHubMediaChannel channel) => Interlocked.Exchange(ref this.media, channel);
+    public void ClearMedia(IBleHubMediaChannel channel) => Interlocked.CompareExchange(ref this.media, null, channel);
+
+    public void CloseMedia()
+    {
+        if (Interlocked.Exchange(ref this.media, null) is { } channel)
+            _ = channel.DisposeAsync().AsTask();
+    }
 
     /// <summary>
     /// Set when the client is connected through another transport rather than BLE

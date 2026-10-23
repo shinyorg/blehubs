@@ -37,9 +37,9 @@ await client.UploadFile(path, "avatar.jpg");                      // L2CAP
 
 | Project | Purpose |
 |---|---|
-| `Shiny.BluetoothLE.Hubs` | Wire protocol (framing, chunking, reassembly), argument codec, serializer, `[BleHubClient]`. Ships the source generator |
-| `Shiny.BluetoothLE.Hubs.Host` | `BleHub<T>`, `IBleHubHost`, `IHubContext<THub>`, groups, L2CAP file server |
-| `Shiny.BluetoothLE.Hubs.Client` | `BleHubClient` (base of the generated proxies), discovery (which leaves out the app's own host), shared connections, file upload and download |
+| `Shiny.BluetoothLE.Hubs` | Wire protocol (framing, chunking, reassembly), argument codec, serializer, `[BleHubClient]`, `IBleHubMediaChannel`. Ships the source generator |
+| `Shiny.BluetoothLE.Hubs.Host` | `BleHub<T>`, `IBleHubHost`, `IHubContext<THub>`, groups, L2CAP file server, L2CAP media channels |
+| `Shiny.BluetoothLE.Hubs.Client` | `BleHubClient` (base of the generated proxies), discovery (which leaves out the app's own host), shared connections, file upload and download, media channels |
 
 ## Setup
 
@@ -97,6 +97,36 @@ services.AddBleHubClient<IGameHub>(GameCharacteristicUuid, o => o.ServiceUuid = 
   await client.Rename("Allan B");
   ```
 - **One service, a characteristic per hub**: every hub on a host is a characteristic inside one GATT service, set with `server.ServiceUuid(...)` (`BleHubHostOptions.ServiceUuid`). It is the only UUID the host advertises (two 128-bit UUIDs overflow the 31 byte advertisement) and the one clients scan for (`BleHubClientOptions.ServiceUuid`), so set it the same on both sides. Both default to `BleHubProtocolOptions.DefaultServiceUuid`, which is shared by every app using this library, so set your own to keep other apps' hosts out of your scans. A scan can't tell which hubs a host is running: joining a stopped hub is refused by the handshake. Hub clients on the same device share one BLE connection.
+
+- **Media channels** (live audio and video): an ordered, two-way pipe of raw binary packets beside each hub connection, on an L2CAP PSM of its own. It skips the hub's framing and serializer, so it suits a stream of audio and video frames.
+
+  ```csharp
+  // host
+  services.AddBleHubServer(server => server
+      .Host(o => o.EnableMediaChannels(maxPacketSize: 128 * 1024))      // opens a second L2CAP PSM on Start
+      .AddHub<CallHub>(CallCharacteristicUuid));
+
+  hubContext.MediaChannelOpened += async (_, e) =>                       // e.Client, e.Channel (ConnectionId = e.Client.Id)
+  {
+      await foreach (var packet in e.Channel.Receive())
+          await e.Channel.Send(packet);                                  // echo
+  };
+  var channel = hubContext.GetMediaChannel(connectionId);                // null when that client has none open
+
+  // client
+  if (client.CanOpenMediaChannel)
+  {
+      var media = await client.OpenMediaChannel();                       // returns the one already open, if any
+      await media.Send(frame);
+      await foreach (var packet in media.Receive(ct)) { ... }
+  }
+  ```
+
+  - `IBleHubMediaChannel`: `Send` (serialized; packets arrive whole and in order, or the channel closes), `Receive` (one reader at a time; completes when the channel closes), `MaxPacketSize` (the host's setting; a bigger packet throws `ArgumentException`), `IsOpen`, `Completion` and `DisposeAsync`. Packets nobody is reading yet are buffered.
+  - The channel closes when either side disposes it, when its L2CAP link fails, and when the hub connection ends: the client disconnects or drops, or the hub stops. A client can open a new one after that.
+  - Over BLE, the handshake ack carries the media PSM and a random per-connection token. The client's first frame on the channel is that token, and the host answers `[0x01]` or closes it, so only a connected client gets a channel, and only its own. Frames are `[u32 LE length][bytes]` (`MediaFrameCodec`).
+  - `CanOpenMediaChannel` is false when the host didn't enable media channels, the host is older than 1.4.0, or the device has no L2CAP (iOS 11+ / Android 10+). The hubs keep working without it. `OpenMediaChannel` then throws `NotSupportedException`.
+  - Other transports can carry it too, through the hidden seams `IBleHubClientTransport.OpenMediaChannel` and `IBleHubTransportEndpoint.MediaChannelOpened`. Shiny.UniversalHubs carries it over Wi-Fi.
 
 - **Over Wi-Fi too**: [Shiny.UniversalHubs](https://github.com/shinyorg/universalhubs) serves the same hubs over Wi-Fi (with mDNS discovery) alongside BLE, and lets clients connect over whichever transport is available, with no change to hub or contract code. It builds on hidden transport seams in this library (`IHubContext<THub>.TransportEndpoint`, `BleHubClient.ConnectExternal`).
 

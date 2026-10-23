@@ -44,6 +44,17 @@ public interface IHubContext<THub> where THub : class
     Task Disconnect(string connectionId, string? reason = null);
 
     /// <summary>
+    /// A connected client opened its media channel (over BLE when <see cref="BleHubHostOptions.EnableMediaChannels"/> is on,
+    /// or over another transport). The channel closes when the client disconnects or the hub stops.
+    /// </summary>
+    event EventHandler<BleHubMediaChannelEventArgs>? MediaChannelOpened;
+
+    /// <summary>
+    /// A client's open media channel, null when it has none
+    /// </summary>
+    IBleHubMediaChannel? GetMediaChannel(string connectionId);
+
+    /// <summary>
     /// Serves this hub over another transport (Wi-Fi, ...) alongside BLE
     /// </summary>
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
@@ -93,6 +104,14 @@ internal sealed class HubContext<THub>(Func<HubRuntime> getRuntime, BleHubHost? 
 
     public Task Disconnect(string connectionId, string? reason = null)
         => this.Runtime.Disconnect(connectionId, new HubDisconnect(HubDisconnectReason.ServerDisconnect, reason));
+
+    public event EventHandler<BleHubMediaChannelEventArgs>? MediaChannelOpened
+    {
+        add => this.Runtime.MediaChannelOpened += value;
+        remove => this.Runtime.MediaChannelOpened -= value;
+    }
+
+    public IBleHubMediaChannel? GetMediaChannel(string connectionId) => this.Runtime.GetMediaChannel(connectionId);
 
     public IHubClients<BleHubPush<TContract>> GetClients<TContract>() where TContract : class
     {

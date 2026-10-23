@@ -86,4 +86,11 @@ public interface IBleHubTransportEndpoint
     Task Disconnect(string connectionId, HubDisconnect disconnect);
 
     BleHubConnectedClient? FindClient(string connectionId);
+
+    /// <summary>
+    /// The transport opened a media channel for a connected client (it checked its own token first). Raises
+    /// <see cref="IHubContext{THub}.MediaChannelOpened"/>, and the channel is closed when that client goes. A channel the
+    /// client already had is closed and replaced. Returns false when the client is unknown - the caller closes the channel.
+    /// </summary>
+    bool MediaChannelOpened(string connectionId, IBleHubMediaChannel channel);
 }

@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
+using System.Reactive.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Shiny.BluetoothLE.Hosting;
+using Shiny.BluetoothLE.Hubs.Protocol;
 using HostedPeripheral = Shiny.BluetoothLE.Hosting.IPeripheral;
 
 namespace Shiny.BluetoothLE.Hubs;
@@ -51,6 +53,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
     readonly Dictionary<HubRuntime, IGattCharacteristic> characteristics = new();
     readonly SemaphoreSlim startLock = new(1, 1);
     L2CapInstance? fileServer;
+    L2CapInstance? mediaServer;
     Timer? sweepTimer;
 
 
@@ -165,6 +168,7 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
                         throw new BleHubException($"Bluetooth hosting is not available ({access})");
 
                     await this.StartFileServer().ConfigureAwait(false);
+                    await this.StartMediaServer().ConfigureAwait(false);
                     this.sweepTimer = new Timer(_ => this.Sweep(), null, this.hostOptions.ClientSweepInterval, this.hostOptions.ClientSweepInterval);
                     this.infrastructureRunning = true;
                     startedInfrastructure = true;
@@ -307,6 +311,10 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
         this.fileServer = null;
         this.SetFileTransfer(0, false);
 
+        this.mediaServer?.Dispose();
+        this.mediaServer = null;
+        this.SetMediaChannels(0, false, 0);
+
         if (this.hosting.IsAdvertising)
             this.hosting.StopAdvertising();
 
@@ -440,6 +448,90 @@ internal sealed class BleHubHost : IBleHubHost, IDisposable
             this.logger?.LogWarning(ex, "File transfers are unavailable on this device");
             this.SetFileTransfer(0, false);
         }
+    }
+
+
+    /// <summary>
+    /// How long a new media channel has to present its token
+    /// </summary>
+    internal static readonly TimeSpan MediaHandshakeTimeout = TimeSpan.FromSeconds(10);
+
+
+    void SetMediaChannels(ushort psm, bool secure, int maxPacketSize)
+    {
+        foreach (var runtime in this.runtimes.Values)
+        {
+            runtime.MediaChannelPsm = psm;
+            runtime.MediaChannelSecure = secure;
+            runtime.MediaMaxPacketSize = maxPacketSize;
+        }
+    }
+
+
+    async Task StartMediaServer()
+    {
+        var media = this.hostOptions.MediaChannels;
+        if (media == null)
+            return;
+
+        try
+        {
+            this.mediaServer = await this.hosting.OpenL2Cap(media.Secure, ch => this.OnMediaChannel(ch, media.MaxPacketSize)).ConfigureAwait(false);
+            this.SetMediaChannels(this.mediaServer.Value.Psm, media.Secure, media.MaxPacketSize);
+            this.logger?.LogInformation("Media channels served on PSM {Psm}", this.mediaServer.Value.Psm);
+        }
+        catch (Exception ex)
+        {
+            // L2CAP needs iOS 11+/Android 10+ - the hubs still work without it
+            this.logger?.LogWarning(ex, "Media channels are unavailable on this device");
+            this.SetMediaChannels(0, false, 0);
+        }
+    }
+
+
+    void OnMediaChannel(L2CapChannel l2cap, int maxPacketSize)
+    {
+        // subscribed before anything else, so the token can't be missed
+        var channel = FramedMediaChannel.Over(
+            l2cap.DataReceived,
+            maxPacketSize,
+            (bytes, ct) => l2cap.Write(bytes).ToTask(ct),
+            l2cap.Dispose,
+            this.logger
+        );
+        _ = this.AcceptMediaChannel(channel, l2cap.Identifier);
+    }
+
+
+    /// <summary>
+    /// The first frame is the token from a client's handshake ack: answer Accepted and hand the channel to that client's
+    /// hub, or close it
+    /// </summary>
+    internal async Task AcceptMediaChannel(FramedMediaChannel channel, string peerIdentifier)
+    {
+        try
+        {
+            var token = await channel.ReadControl(MediaHandshakeTimeout, CancellationToken.None).ConfigureAwait(false);
+            foreach (var runtime in this.runtimes.Values)
+            {
+                if (runtime.FindMediaToken(token) is not { } connectionId)
+                    continue;
+
+                // answered before the hub hears of it, so nothing the hub sends can get ahead of the answer
+                using var cts = new CancellationTokenSource(MediaHandshakeTimeout);
+                await channel.SendControl(new[] { MediaFrameCodec.Accepted }, cts.Token).ConfigureAwait(false);
+                if (!runtime.AttachMediaChannel(connectionId, channel))
+                    await channel.DisposeAsync().ConfigureAwait(false);
+
+                return;
+            }
+            this.logger?.LogWarning("Refused a media channel from {Peer}: unknown token", peerIdentifier);
+        }
+        catch (Exception ex)
+        {
+            this.logger?.LogInformation(ex, "Media channel from {Peer} did not open", peerIdentifier);
+        }
+        await channel.DisposeAsync().ConfigureAwait(false);
     }
 
 

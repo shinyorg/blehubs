@@ -57,7 +57,44 @@ public class BleHubHostOptions
         this.FileTransfers = options;
         return this;
     }
+
+    /// <summary>
+    /// Media channel settings, null when disabled
+    /// </summary>
+    public BleHubMediaChannelOptions? MediaChannels { get; private set; }
+
+    /// <summary>
+    /// Serves media channels (<see cref="IBleHubMediaChannel"/>) on a second L2CAP PSM, opened when hosting starts. Each
+    /// connected client may open one, beside its hub connection, for live audio and video. Hubs see them through
+    /// <see cref="IHubContext{THub}.MediaChannelOpened"/>.
+    /// </summary>
+    /// <param name="maxPacketSize">The largest packet either side may send</param>
+    /// <param name="secure">Listen for secure (encrypted) L2CAP channels. Android listens on secure and insecure channels separately; Apple ignores it.</param>
+    public BleHubHostOptions EnableMediaChannels(int maxPacketSize = 128 * 1024, bool secure = false)
+    {
+        if (maxPacketSize < 1)
+            throw new ArgumentOutOfRangeException(nameof(maxPacketSize), "Max packet size must be at least 1");
+
+        this.MediaChannels = new BleHubMediaChannelOptions(maxPacketSize, secure);
+        return this;
+    }
 }
+
+
+/// <summary>
+/// Media channel settings - see <see cref="BleHubHostOptions.EnableMediaChannels"/>
+/// </summary>
+/// <param name="MaxPacketSize">The largest packet either side may send</param>
+/// <param name="Secure">Whether the L2CAP listener is secure</param>
+public sealed record BleHubMediaChannelOptions(int MaxPacketSize, bool Secure);
+
+
+/// <summary>
+/// A client opened its media channel
+/// </summary>
+/// <param name="Client">Whose channel it is</param>
+/// <param name="Channel">The channel - its ConnectionId is the client's</param>
+public sealed record BleHubMediaChannelEventArgs(BleHubConnectedClient Client, IBleHubMediaChannel Channel);
 
 
 public class BleHubFileTransferOptions(string rootDirectory)

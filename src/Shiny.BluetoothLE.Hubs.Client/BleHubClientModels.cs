@@ -104,6 +104,20 @@ public interface IBleHubConnection
     Task<L2CapTransferResult> UploadFile(string localFilePath, string? remoteFileName = null, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default);
     Task<L2CapTransferResult> UploadStream(Stream source, long length, string remoteFileName, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default);
     Task<L2CapTransferResult> DownloadFile(string remoteFileName, string localFilePath, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Whether <see cref="OpenMediaChannel"/> can work: connected, and the host serves media channels (over BLE: it
+    /// enabled them and this device supports L2CAP)
+    /// </summary>
+    bool CanOpenMediaChannel { get; }
+
+    /// <summary>
+    /// Opens this connection's media channel - an ordered packet pipe beside the hub, for live audio and video. Returns
+    /// the channel already open when there is one. It closes when the connection ends. Throws
+    /// <see cref="NotSupportedException"/> when the host or the device can't, and <see cref="BleHubException"/> when the
+    /// host refuses it.
+    /// </summary>
+    Task<IBleHubMediaChannel> OpenMediaChannel(CancellationToken cancellationToken = default);
 }
 
 

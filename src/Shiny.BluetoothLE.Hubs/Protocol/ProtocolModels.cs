@@ -20,12 +20,20 @@ public sealed record HandshakeInfo(
 /// <param name="HostName">The host's advertised local name</param>
 /// <param name="FileTransferPsm">The L2CAP PSM serving file transfers, 0 when file transfers are not available</param>
 /// <param name="FileTransferSecure">Whether the L2CAP channel must be opened secure (Android listens on secure and insecure channels separately)</param>
+/// <param name="MediaChannelPsm">The L2CAP PSM serving media channels, 0 when media channels are not available. Absent from hosts older than media channels.</param>
+/// <param name="MediaChannelSecure">Whether the media L2CAP channel must be opened secure</param>
+/// <param name="MediaToken">This connection's media token - the client's first frame on the media channel (its UTF-8 bytes)</param>
+/// <param name="MediaMaxPacketSize">The largest media packet either side may send</param>
 public sealed record HandshakeAck(
     bool Accepted,
     string? Reason,
     string? HostName,
     ushort FileTransferPsm,
-    bool FileTransferSecure
+    bool FileTransferSecure,
+    ushort MediaChannelPsm = 0,
+    bool MediaChannelSecure = false,
+    string? MediaToken = null,
+    int MediaMaxPacketSize = 0
 );
 
 /// <summary>
